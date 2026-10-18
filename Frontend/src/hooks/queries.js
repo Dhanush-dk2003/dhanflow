@@ -35,6 +35,8 @@ export const useNotifications = () =>
 
 export const useSettings = () => useQuery({ queryKey: ['settings'], queryFn: api.settings.get, staleTime: Infinity });
 
+export const useAiStatus = () => useQuery({ queryKey: ['ai-status'], queryFn: api.ai.status, staleTime: 5 * 60_000 });
+
 export const useCategories = () =>
   useQuery({
     queryKey: ['categories'],
@@ -61,8 +63,18 @@ function useAppMutation(mutationFn, successMessage) {
 
 export const useSaveTransaction = () =>
   useAppMutation(
-    ({ id, data }) => (id ? api.transactions.update(id, data) : api.transactions.create(data)),
-    ({ id }) => (id ? 'Transaction updated' : 'Transaction added'),
+    async ({ id, data, voice }) => {
+      const txn = id ? await api.transactions.update(id, data) : await api.transactions.create(data);
+      // The entry is already saved, so a failed upload must not fail the save (a retry would duplicate it).
+      try {
+        if (voice?.blob) await api.transactions.saveVoice(txn._id, voice);
+        else if (voice?.remove) await api.transactions.removeVoice(txn._id);
+      } catch (err) {
+        toast.error(`Saved, but the voice note didn't upload: ${err.message}`);
+      }
+      return txn;
+    },
+    ({ id, voice }) => `${id ? 'Transaction updated' : 'Transaction added'}${voice?.blob ? ' with its voice note' : ''}`,
   );
 
 export const useDeleteTransaction = () => useAppMutation((id) => api.transactions.remove(id), 'Transaction deleted');
@@ -99,6 +111,8 @@ export const useSaveBudget = () =>
 export const useResetBudget = () => useAppMutation((month) => api.budgets.reset(month), 'Budget reset');
 
 export const useSaveSettings = () => useAppMutation((data) => api.settings.update(data), 'Settings saved');
+
+export const useCommitImport = () => useAppMutation((data) => api.imports.commit(data));
 
 function useNotificationMutation(mutationFn) {
   const queryClient = useQueryClient();

@@ -18,6 +18,8 @@ const SHORTCUTS = [
   ['T', 'Light / dark theme'],
   ['M', 'Hide / show amounts'],
   ['L', 'Lock now'],
+  ['K', 'Ask DhanFlow (AI)'],
+  ['I', 'Import a statement'],
 ];
 
 function ThemeChoice() {

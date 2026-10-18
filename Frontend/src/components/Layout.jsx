@@ -1,4 +1,4 @@
-import { Suspense, useMemo } from 'react';
+import { Suspense, useCallback, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Toaster } from 'sonner';
@@ -14,6 +14,7 @@ import {
   LockKeyholeOpen,
   Moon,
   Plus,
+  Sparkles,
   Sun,
   Target,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ import TransactionModal from './TransactionForm';
 import Calculator from './Calculator';
 import NotificationCenter from './NotificationCenter';
 import SettingsModal from './SettingsModal';
+import AskPanel from './AskPanel';
 
 const NAV = [
   { to: '/', label: 'Home', icon: House, end: true, key: 'h' },
@@ -163,6 +165,8 @@ export default function Layout() {
   const { data: settings } = useSettings();
   const { openTransaction, toggleCalculator, setSettingsOpen, theme, toggleTheme, amountsHidden, toggleAmounts } = useUI();
   const { configured, lockNow } = useAuth();
+  const [askOpen, setAskOpen] = useState(false);
+  const closeAsk = useCallback(() => setAskOpen(false), []);
   const name = settings?.name ?? BRAND.owner;
 
   const hotkeys = useMemo(
@@ -171,6 +175,8 @@ export default function Layout() {
       c: toggleCalculator,
       t: toggleTheme,
       m: toggleAmounts,
+      k: () => setAskOpen((o) => !o),
+      i: () => navigate('/import'),
       ...(configured ? { l: lockNow } : {}),
       ...Object.fromEntries(NAV.map((n) => [n.key, () => navigate(n.to)])),
     }),
@@ -186,6 +192,13 @@ export default function Layout() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <Logo />
           <div className="flex items-center gap-1.5">
+            <button
+              className="mr-1 inline-flex h-9 cursor-pointer items-center gap-2 rounded-xl border border-neon/25 bg-neon/10 px-2.5 text-sm font-medium text-neon transition hover:bg-neon/15 sm:px-3"
+              onClick={() => setAskOpen(true)}
+              title="Ask DhanFlow about your money (K)"
+            >
+              <Sparkles size={16} /> <span className="hidden lg:inline">Ask</span>
+            </button>
             {summary && (
               <Link
                 to="/accounts"
@@ -235,6 +248,7 @@ export default function Layout() {
       <Calculator />
       <TransactionModal />
       <SettingsModal />
+      <AskPanel open={askOpen} onClose={closeAsk} />
       <Toaster position="top-center" theme={theme} richColors toastOptions={{ style: { borderRadius: 16 } }} />
     </div>
   );

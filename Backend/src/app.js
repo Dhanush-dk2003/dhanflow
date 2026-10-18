@@ -12,6 +12,8 @@ const app = express();
 app.use(helmet());
 app.use(cors({ origin: env.clientOrigin, credentials: true }));
 app.use(compression());
+// A month of reviewed statement rows can exceed the default limit.
+app.use('/api/import', express.json({ limit: '2mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(morgan(isProd ? 'combined' : 'dev'));
 
