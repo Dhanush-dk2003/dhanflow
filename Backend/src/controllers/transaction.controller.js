@@ -1,6 +1,7 @@
 import * as service from '../services/transaction.service.js';
 import { checkBudgetAlerts } from '../services/notification.service.js';
 import { streamExcel } from '../services/export.service.js';
+import * as voice from '../services/voice.service.js';
 
 // Budget alerts are a side effect; a failure there must not fail the request.
 const refreshBudgetAlerts = () =>
@@ -32,5 +33,22 @@ export const update = async (req, res) => {
 
 export const remove = async (req, res) => {
   await service.deleteTransaction(req.valid.params.id);
+  res.status(204).end();
+};
+
+export const getVoice = async (req, res) => {
+  const note = await voice.getVoiceNote(req.valid.params.id);
+  res.set({ 'Content-Type': note.mimeType, 'Content-Length': note.data.length, 'Cache-Control': 'private, no-store' });
+  res.end(note.data);
+};
+
+export const saveVoice = async (req, res) => {
+  const mimeType = req.get('content-type')?.split(';')[0].trim();
+  const note = await voice.saveVoiceNote(req.valid.params.id, req.body, { mimeType, ...req.valid.query });
+  res.json(note);
+};
+
+export const removeVoice = async (req, res) => {
+  await voice.deleteVoiceNote(req.valid.params.id);
   res.status(204).end();
 };

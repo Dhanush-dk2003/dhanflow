@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { TRANSFER_CATEGORY, Transaction } from '../models/Transaction.js';
+import { VoiceNote } from '../models/VoiceNote.js';
 import { ApiError } from '../utils/ApiError.js';
 import { dateRangeMatch, escapeRegex, round2 } from '../utils/helpers.js';
 import { assertUsableAccounts, getDefaultAccountId } from './account.service.js';
@@ -164,6 +165,7 @@ export async function updateTransaction(id, { participants, ...fields }) {
 export async function deleteTransaction(id) {
   const txn = await Transaction.findByIdAndDelete(id).lean();
   if (!txn) throw ApiError.notFound('Transaction not found');
+  if (txn.voiceNote) await VoiceNote.deleteOne({ transaction: txn._id });
 
   if (txn.settlementOf?.transaction) {
     // Deleting a repayment re-opens the participant's debt.

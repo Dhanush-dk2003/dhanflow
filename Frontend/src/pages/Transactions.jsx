@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, FileSpreadsheet, Plus, Search, SlidersHorizontal, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, FileSpreadsheet, FileText, FileType, FileUp, Plus, Search, SlidersHorizontal, Sheet, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useCategories, useDeleteTransaction, useTransactions } from '../hooks/queries';
 import { useDebounce } from '../hooks/useDebounce';
@@ -38,12 +38,71 @@ function AccountFilter({ value, onChange, accounts, unassigned }) {
   );
 }
 
+const EXPORT_OPTIONS = [
+  { format: 'xlsx', label: 'Excel (.xlsx)', icon: FileSpreadsheet, color: 'text-emerald-300' },
+  { format: 'csv', label: 'CSV (.csv)', icon: Sheet, color: 'text-aqua' },
+  { format: 'pdf', label: 'PDF (.pdf)', icon: FileText, color: 'text-rose-300' },
+  { format: 'docx', label: 'Word (.docx)', icon: FileType, color: 'text-sky-300' },
+];
+
+function ExportMenu({ query }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    const onKey = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const run = async (format) => {
+    setOpen(false);
+    setBusy(format);
+    try {
+      const name = format === 'xlsx' ? await api.transactions.exportExcel(query) : await api.reports.download('transactions', format, query);
+      toast.success(`Downloaded ${name}`);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button className="btn-secondary" onClick={() => setOpen((o) => !o)} disabled={busy !== null} title="Download the filtered list">
+        {busy ? <Spinner /> : <FileSpreadsheet size={16} className="text-emerald-300" />} {busy ? 'Preparing…' : 'Export'}
+        <ChevronDown size={14} className="text-white/50" />
+      </button>
+      {open && (
+        <div className="glass-solid absolute right-0 z-30 mt-2 w-48 overflow-hidden p-1">
+          {EXPORT_OPTIONS.map(({ format, label, icon: Icon, color }) => (
+            <button
+              key={format}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-white/80 hover:bg-white/[0.06]"
+              onClick={() => run(format)}
+            >
+              <Icon size={15} className={color} /> {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Transactions() {
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [showFilters, setShowFilters] = useState(false);
-  const [exporting, setExporting] = useState(false);
   const confirm = useConfirm();
   const [searchParams, setSearchParams] = useSearchParams();
   const { openTransaction } = useUI();
@@ -100,26 +159,15 @@ export default function Transactions() {
       action: () => remove.mutateAsync(txn._id),
     });
 
-  const exportExcel = async () => {
-    setExporting(true);
-    try {
-      const name = await api.transactions.exportExcel(query);
-      toast.success(`Downloaded ${name}`);
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setExporting(false);
-    }
-  };
-
   const { pagination, totals, items = [] } = data ?? {};
 
   return (
     <>
       <PageHeader eyebrow="History" title="Activity" subtitle="Every rupee in and out, searchable and exportable.">
-        <button className="btn-secondary" onClick={exportExcel} disabled={exporting} title="Download the filtered list as an Excel workbook">
-          {exporting ? <Spinner /> : <FileSpreadsheet size={16} className="text-emerald-300" />} {exporting ? 'Preparing…' : 'Export Excel'}
-        </button>
+        <Link to="/import" className="btn-secondary" title="Import a statement, Excel, CSV, Word or text file (I)">
+          <FileUp size={16} className="text-aqua" /> Import
+        </Link>
+        <ExportMenu query={query} />
         <button
           className="btn-primary"
           onClick={() => openTransaction(null, selectedAccount && !selectedAccount.archived ? { account: selectedAccount._id } : null)}

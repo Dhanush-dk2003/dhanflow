@@ -57,6 +57,11 @@ export const updateTransactionSchema = transactionBase
 
 export const idParamSchema = z.object({ id: objectId });
 
+export const voiceNoteQuerySchema = z.object({
+  duration: z.coerce.number().min(0).max(120).default(0),
+  transcript: z.string().trim().max(500).default(''),
+});
+
 export const listQuerySchema = z.object({
   type: z.enum(TRANSACTION_TYPES).optional(),
   category: z.string().trim().max(40).optional(),
@@ -168,6 +173,60 @@ export const updateLockSchema = z
   .superRefine(checkSecret);
 
 export const removeLockSchema = z.object({ currentSecret: z.string().min(1, 'Confirm your current PIN or pattern').max(40) });
+
+export const importPreviewSchema = z.object({
+  password: z.string().max(100).optional(),
+  ai: z.enum(['off', 'auto', 'force']).default('auto'),
+});
+
+export const importCommitSchema = z.object({
+  account: accountRef.optional(),
+  rows: z
+    .array(
+      z.object({
+        date: z.coerce.date({ error: 'Invalid date' }),
+        type: z.enum(['debit', 'credit']),
+        amount: money,
+        category: z.string().trim().min(1, 'Category is required').max(40),
+        description: z.string().trim().max(200).optional(),
+        paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+        importRef: z.string().trim().max(120).optional(),
+        learnKey: z.string().trim().max(60).nullish().transform((v) => v || undefined),
+      }),
+    )
+    .min(1, 'Pick at least one entry to import')
+    .max(2000, 'Import 2000 entries or fewer at a time'),
+});
+
+export const aiChatSchema = z.object({
+  messages: z
+    .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().trim().min(1).max(8000) }))
+    .min(1)
+    .max(60)
+    .refine((m) => m[m.length - 1].role === 'user', { message: 'The last message must be a question' })
+    .transform((m) => m.slice(-16)),
+});
+
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+
+export const reportParamSchema = z.object({
+  report: z.enum(['transactions', 'splits', 'people', 'accounts', 'budget', 'categories', 'monthly']),
+});
+
+export const reportQuerySchema = z.object({
+  format: z.enum(['json', 'xlsx', 'csv', 'pdf', 'docx']).default('json'),
+  from: isoDay.optional(),
+  to: isoDay.optional(),
+  type: z.enum(TRANSACTION_TYPES).optional(),
+  category: z.string().trim().max(40).optional(),
+  search: z.string().trim().max(100).optional(),
+  split: z.enum(['true', 'false']).optional(),
+  account: z.union([objectId, z.literal('none')]).optional(),
+  person: z.string().trim().max(60).optional(),
+  status: z.enum(['pending', 'paid', 'all']).optional(),
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Month must be YYYY-MM').optional(),
+  sort: z.enum(['date', '-date', 'amount', '-amount']).optional(),
+});
 
 export const updateAccountSchema = accountFields
   .partial()

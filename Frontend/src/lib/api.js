@@ -20,11 +20,12 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function request(path, { method = 'GET', body, params } = {}) {
+async function request(path, { method = 'GET', body, params, contentType } = {}) {
+  const isRaw = body instanceof FormData || body instanceof Blob;
   const res = await fetch(buildUrl(path, params), {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: body && !isRaw ? { 'Content-Type': 'application/json' } : contentType ? { 'Content-Type': contentType } : undefined,
+    body: body && !isRaw ? JSON.stringify(body) : body,
     credentials: 'include',
   });
 
@@ -37,14 +38,19 @@ async function request(path, { method = 'GET', body, params } = {}) {
   return data;
 }
 
-/** Fetches a file and hands it to the browser as a download, using the server's filename. */
-async function download(path, params, fallbackName) {
+async function fetchFile(path, params) {
   const res = await fetch(buildUrl(path, params), { credentials: 'include' });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
     if (res.status === 401 && data?.code === 'LOCKED') window.dispatchEvent(new Event(LOCKED_EVENT));
     throw new ApiRequestError(data?.message || `Download failed (${res.status})`, res.status, data);
   }
+  return res;
+}
+
+/** Fetches a file and hands it to the browser as a download, using the server's filename. */
+async function download(path, params, fallbackName) {
+  const res = await fetchFile(path, params);
   const name = res.headers.get('content-disposition')?.match(/filename="?([^";]+)"?/)?.[1] ?? fallbackName;
   const url = URL.createObjectURL(await res.blob());
   const link = Object.assign(document.createElement('a'), { href: url, download: name });
@@ -66,6 +72,15 @@ export const api = {
     update: (id, data) => request(`/transactions/${id}`, { method: 'PATCH', body: data }),
     remove: (id) => request(`/transactions/${id}`, { method: 'DELETE' }),
     exportExcel: (params) => download('/transactions/export', params, 'DhanFlow-transactions.xlsx'),
+    voice: async (id) => (await fetchFile(`/transactions/${id}/voice`)).blob(),
+    saveVoice: (id, { blob, mimeType, duration, transcript }) =>
+      request(`/transactions/${id}/voice`, {
+        method: 'PUT',
+        body: blob,
+        contentType: mimeType,
+        params: { duration: Math.min(120, duration ?? 0).toFixed(1), transcript: (transcript ?? '').slice(0, 500) },
+      }),
+    removeVoice: (id) => request(`/transactions/${id}/voice`, { method: 'DELETE' }),
   },
 
   splits: {
@@ -98,6 +113,27 @@ export const api = {
     remove: (id) => request(`/notifications/${id}`, { method: 'DELETE' }),
     clearRead: () => request('/notifications/read', { method: 'DELETE' }),
     check: () => request('/notifications/check', { method: 'POST' }),
+  },
+
+  imports: {
+    preview: (file, { password, ai = 'auto' } = {}) => {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('ai', ai);
+      if (password) form.append('password', password);
+      return request('/import/preview', { method: 'POST', body: form });
+    },
+    commit: (data) => request('/import/commit', { method: 'POST', body: data }),
+  },
+
+  reports: {
+    get: (report, params) => request(`/reports/${report}`, { params }),
+    download: (report, format, params) => download(`/reports/${report}`, { ...params, format }, `DhanFlow-${report}.${format}`),
+  },
+
+  ai: {
+    status: () => request('/ai/status'),
+    chat: (messages) => request('/ai/chat', { method: 'POST', body: { messages } }),
   },
 
   settings: {

@@ -4,6 +4,7 @@ import { PAYMENT_METHODS } from '../lib/constants';
 import { fmtDayHeading, money, round2, toInputDate } from '../lib/format';
 import { AccountTag, useAccountData } from './accounts';
 import { Badge } from './ui';
+import { VoiceNoteChip } from './VoiceNote';
 
 const methodLabel = Object.fromEntries(PAYMENT_METHODS.map((m) => [m.value, m.label]));
 
@@ -99,6 +100,7 @@ function Row({ txn, onEdit, onDelete, compact, index, byId, accountId }) {
           <p className="truncate font-medium text-white">{title}</p>
           {txn.description && txn.type !== 'transfer' && <Badge>{txn.category}</Badge>}
           {txn.type === 'transfer' && <Badge tone="aqua">Transfer</Badge>}
+          {txn.voiceNote && <VoiceNoteChip transactionId={txn._id} duration={txn.voiceNote.duration} />}
         </div>
         {!compact && <Meta txn={txn} byId={byId} />}
         {!compact && <SplitInfo txn={txn} />}

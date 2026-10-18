@@ -25,6 +25,15 @@ const settlementSchema = new Schema(
   { _id: false },
 );
 
+const voiceNoteInfoSchema = new Schema(
+  {
+    duration: { type: Number, default: 0 },
+    transcript: { type: String, default: '' },
+    size: { type: Number, default: 0 },
+  },
+  { _id: false },
+);
+
 const transactionSchema = new Schema(
   {
     type: { type: String, enum: TRANSACTION_TYPES, required: true },
@@ -41,6 +50,11 @@ const transactionSchema = new Schema(
     participants: { type: [participantSchema], default: [] },
     // Present only on credit entries auto-created when a split participant pays back.
     settlementOf: { type: settlementSchema, default: undefined },
+    // Set on entries imported from a statement (UPI/UTR reference or a content hash),
+    // so importing the same statement twice can't create duplicates.
+    importRef: { type: String, default: undefined },
+    // Summary of the recording kept in VoiceNote; present only when one is attached.
+    voiceNote: { type: voiceNoteInfoSchema, default: undefined },
   },
   { timestamps: true, versionKey: false },
 );
@@ -52,5 +66,6 @@ transactionSchema.index({ account: 1, date: -1 });
 transactionSchema.index({ toAccount: 1 }, { sparse: true });
 transactionSchema.index({ 'participants.isPaid': 1 });
 transactionSchema.index({ 'settlementOf.transaction': 1 }, { sparse: true });
+transactionSchema.index({ importRef: 1 }, { unique: true, sparse: true });
 
 export const Transaction = mongoose.model('Transaction', transactionSchema);

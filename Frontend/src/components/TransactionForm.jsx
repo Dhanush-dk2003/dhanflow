@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Divide, Landmark, Lock, Trash2, UserPlus } from 'lucide-react';
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Divide, Landmark, Lock, Mic, Square, Trash2, UserPlus } from 'lucide-react';
 import { useCategories, useSaveTransaction } from '../hooks/queries';
+import { speechStatus, useSpeech } from '../hooks/useSpeech';
 import { useUI } from '../context/UIContext';
+import { parseSpokenEntry } from '../lib/voiceEntry';
 import { DEFAULT_CATEGORIES, PAYMENT_METHODS, SPLIT_REPAYMENT, TRANSFER } from '../lib/constants';
 import { isExpression, tryEvaluate } from '../lib/calc';
 import { localISODate, money, moneyExact, round2, toInputDate } from '../lib/format';
 import { AccountPicker, useAccountData } from './accounts';
 import { Modal, Spinner } from './ui';
+import { VoiceNotePlayer } from './VoiceNote';
 
 const emptyForm = (prefill) => ({
   type: 'debit',
@@ -44,9 +47,64 @@ const fromTransaction = (t) => ({
 
 const amountOf = (v) => tryEvaluate(v) ?? 0;
 
+const FIELD_NAMES = { amount: 'amount', type: 'type', category: 'category', date: 'date', description: 'description', paymentMethod: 'payment', participants: 'split' };
+
+function heardSummary({ text, fields }, autoFill) {
+  if (!text) return "Couldn't make out the words, but the voice note is kept.";
+  if (!autoFill) return 'Voice note recorded. It will be saved with this entry.';
+  return fields.length ? `Filled ${fields.join(', ')}. Check and save; the voice note is saved too.` : "Couldn't pick out the details, but the voice note is kept.";
+}
+
+function VoiceBar({ categories, autoFill, onFill, onRecorded }) {
+  const [heard, setHeard] = useState(null);
+  const speech = useSpeech({
+    onResult: (text, recording) => {
+      if (recording) onRecorded({ ...recording, transcript: text });
+      const patch = autoFill && text ? parseSpokenEntry(text, categories) : {};
+      setHeard({ text, fields: Object.keys(patch).filter((k) => FIELD_NAMES[k]).map((k) => FIELD_NAMES[k]) });
+      if (autoFill && text) onFill(patch);
+    },
+  });
+  if (!speech.supported) return null;
+  const status = speechStatus(speech, autoFill ? 'Listening… e.g. "spent 450 on petrol yesterday in cash"' : 'Listening…');
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+      <button
+        type="button"
+        onClick={speech.toggle}
+        disabled={Boolean(speech.transcribing)}
+        className={`flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl transition disabled:cursor-wait ${
+          speech.listening ? 'animate-pulse bg-rose-500 text-white' : 'bg-neon/15 text-neon hover:bg-neon/25'
+        }`}
+        title={speech.listening ? 'Stop recording' : autoFill ? 'Speak the entry' : 'Record a voice note'}
+        aria-label={speech.listening ? 'Stop recording' : autoFill ? 'Speak the entry' : 'Record a voice note'}
+      >
+        {speech.transcribing ? <Spinner /> : speech.listening ? <Square size={14} /> : <Mic size={16} />}
+      </button>
+      <p className="min-w-0 flex-1 text-xs text-white/50">
+        {status ? (
+          <span className="text-white/85">{status}</span>
+        ) : heard ? (
+          <>
+            {heard.text && <span className="text-white/80">“{heard.text}”</span>}
+            <span className="block text-[11px] text-white/40">{heardSummary(heard, autoFill)}</span>
+          </>
+        ) : autoFill ? (
+          'Tap the mic and say it: "paid 1200 for dinner, split with Ravi and Anu". The recording is saved with the entry.'
+        ) : (
+          'Tap the mic to record a voice note for this entry'
+        )}
+      </p>
+    </div>
+  );
+}
+
 function TransactionForm({ initial, prefill, onDone }) {
   const [form, setForm] = useState(() => (initial ? fromTransaction(initial) : emptyForm(prefill)));
   const [error, setError] = useState('');
+  const [voice, setVoice] = useState(null);
+  const [removeSavedVoice, setRemoveSavedVoice] = useState(false);
+  const savedVoice = initial?.voiceNote && !removeSavedVoice ? initial.voiceNote : null;
   const { data: categories = DEFAULT_CATEGORIES } = useCategories();
   const { active: activeAccounts, byId, defaultId } = useAccountData();
   const save = useSaveTransaction();
@@ -146,6 +204,7 @@ function TransactionForm({ initial, prefill, onDone }) {
             amount: round2(amountOf(a)),
           })),
         },
+        voice: voice ?? (initial?.voiceNote && removeSavedVoice ? { remove: true } : undefined),
       },
       { onSuccess: onDone },
     );
@@ -154,8 +213,37 @@ function TransactionForm({ initial, prefill, onDone }) {
   const isDebit = form.type === 'debit';
   const canTransfer = pickable.length >= 2;
 
+  const fillFromVoice = (patch) => {
+    if (patch.type && patch.type !== form.type) {
+      setType(patch.type);
+      if (patch.type === 'credit') delete patch.isSplit;
+    }
+    const cashAccount = activeAccounts.find((a) => a.type === 'cash');
+    if (patch.paymentMethod === 'cash' && cashAccount) patch.account = cashAccount._id;
+    set(patch);
+  };
+
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+      <VoiceBar categories={categories} autoFill={!initial} onFill={fillFromVoice} onRecorded={setVoice} />
+      {voice ? (
+        <VoiceNotePlayer
+          blob={voice.blob}
+          duration={voice.duration}
+          transcript={voice.transcript}
+          note={savedVoice ? 'New voice note, replaces the old one' : 'Voice note, saved with this entry'}
+          onRemove={() => setVoice(null)}
+        />
+      ) : (
+        savedVoice && (
+          <VoiceNotePlayer
+            transactionId={initial._id}
+            duration={savedVoice.duration}
+            transcript={savedVoice.transcript}
+            onRemove={() => setRemoveSavedVoice(true)}
+          />
+        )
+      )}
       <div className="grid grid-cols-3 gap-1 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1">
         {[
           { type: 'debit', label: 'Money out', icon: ArrowUpRight, active: 'bg-rose-400 text-black' },

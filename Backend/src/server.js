@@ -7,7 +7,8 @@ async function start() {
   try {
     await connectDB();
   } catch (err) {
-    console.error(`Failed to connect to MongoDB at ${env.mongoUri}:`, err.message);
+    const safeUri = env.mongoUri.replace(/\/\/([^:/@]+):.*@/, '//$1:***@');
+    console.error(`Failed to connect to MongoDB at ${safeUri}:`, err.message);
     process.exit(1);
   }
 

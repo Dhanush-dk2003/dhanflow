@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import * as ctrl from '../controllers/transaction.controller.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -6,6 +6,7 @@ import {
   idParamSchema,
   listQuerySchema,
   updateTransactionSchema,
+  voiceNoteQuerySchema,
 } from '../validators/schemas.js';
 
 const router = Router();
@@ -22,5 +23,15 @@ router
   .get(validate({ params: idParamSchema }), ctrl.getOne)
   .patch(validate({ params: idParamSchema, body: updateTransactionSchema }), ctrl.update)
   .delete(validate({ params: idParamSchema }), ctrl.remove);
+
+router
+  .route('/:id/voice')
+  .get(validate({ params: idParamSchema }), ctrl.getVoice)
+  .put(
+    express.raw({ type: 'audio/*', limit: '1mb' }),
+    validate({ params: idParamSchema, query: voiceNoteQuerySchema }),
+    ctrl.saveVoice,
+  )
+  .delete(validate({ params: idParamSchema }), ctrl.removeVoice);
 
 export default router;

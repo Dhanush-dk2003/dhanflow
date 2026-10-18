@@ -8,6 +8,10 @@ export const BRAND = {
 
 export const SPLIT_REPAYMENT = 'Split Repayment';
 
+/** Files the importer reads (must match the backend's ACCEPTED_EXTENSIONS). */
+export const IMPORT_EXTENSIONS = ['pdf', 'xlsx', 'xlsm', 'xls', 'ods', 'csv', 'tsv', 'txt', 'docx'];
+export const IMPORT_ACCEPT = IMPORT_EXTENSIONS.map((e) => `.${e}`).join(',');
+
 export const DEFAULT_CATEGORIES = {
   debit: [
     'Food',
