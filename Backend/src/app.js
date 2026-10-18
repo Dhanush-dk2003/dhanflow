@@ -16,6 +16,11 @@ app.use(compression());
 app.use('/api/import', express.json({ limit: '2mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(morgan(isProd ? 'combined' : 'dev'));
+// The API sits behind Vercel's CDN in production; personal data must never be cached there.
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 
 app.use('/api', routes);
 
