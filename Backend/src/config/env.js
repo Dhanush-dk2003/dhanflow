@@ -11,7 +11,12 @@ const AI_PRESETS = {
     fallbackModels: ['gemini-3.1-flash-lite'],
     label: 'Google Gemini',
   },
-  groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', label: 'Groq' },
+  groq: {
+    baseUrl: 'https://api.groq.com/openai/v1',
+    model: 'openai/gpt-oss-120b',
+    fallbackModels: ['openai/gpt-oss-20b'],
+    label: 'Groq',
+  },
   ollama: { baseUrl: 'http://localhost:11434/v1', model: 'llama3.1', label: 'Ollama (local)', keyless: true },
 };
 

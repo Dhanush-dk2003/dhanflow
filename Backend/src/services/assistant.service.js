@@ -1435,7 +1435,9 @@ export async function askAssistant(history) {
       return done(ctx.actions.length ? 'Done.' : "I couldn't find an answer to that. Try asking it another way.");
     }
     // Sent back whole: Gemini rejects the next turn unless its thought signatures come back untouched.
-    messages.push({ ...message, role: 'assistant', content: message.content ?? '', tool_calls: calls });
+    // Groq's `reasoning` is the exception: it isn't accepted as input.
+    const { reasoning: _reasoning, ...reply } = message;
+    messages.push({ ...reply, role: 'assistant', content: message.content ?? '', tool_calls: calls });
     let allSaid = true;
     for (const call of calls) {
       toolsUsed.add(call.function?.name);
