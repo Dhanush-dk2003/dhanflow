@@ -1073,16 +1073,20 @@ const actionRunners = {
     const { items: debts } = await listDebts({ status: 'pending', person: who });
     const owe = round2(debts.reduce((s, x) => s + x.amount, 0));
     const net = round2(total - owe);
-    if (net <= 0) {
-      return { error: `${who} owes ${rupees(total)} but ${me} owes ${who} ${rupees(owe)}, so after netting ${who} owes nothing. Suggest settle_up instead.` };
-    }
+    const outcome =
+      net > 0 ? `you just need to send me ${exact(net)}` : net < 0 ? `I'll send you ${exact(-net)}` : "we're even. Nobody needs to pay";
     const text = owe
-      ? `Hey ${who}, settling up our splits:\n\nYou owe me ${exact(total)}:\n${shares.map(line).join('\n')}\n\nI owe you ${exact(owe)}:\n${debts.map(line).join('\n')}\n\nSo after netting, you just need to send me ${exact(net)}.\n\nThanks! – ${me}`
+      ? `Hey ${who}, settling up our splits:\n\nYou owe me ${exact(total)}:\n${shares.map(line).join('\n')}\n\nI owe you ${exact(owe)}:\n${debts.map(line).join('\n')}\n\nSo after netting, ${outcome}.\n\nThanks! – ${me}`
       : `Hey ${who}, just a friendly reminder. You owe me ${exact(total)} for:\n${shares.map(line).join('\n')}\n\nThanks! – ${me}`;
-    ctx.actions.push({ type: 'remind', person: who, amount: net, count: shares.length, text });
-    ctx.said.push(
-      `Here's a reminder for **${who}** (${owe ? `${rupees(net)} after netting the ${rupees(owe)} you owe them` : `${rupees(total)} from ${shares.length} ${shares.length === 1 ? 'split' : 'splits'}`}). Tap **Send on WhatsApp** or **Copy**.`,
-    );
+    ctx.actions.push({ type: 'remind', person: who, amount: Math.abs(net), count: shares.length, text });
+    const summary = !owe
+      ? `${rupees(total)} from ${shares.length} ${shares.length === 1 ? 'split' : 'splits'}`
+      : net > 0
+        ? `${who} sends you ${rupees(net)} after netting the ${rupees(owe)} you owe`
+        : net < 0
+          ? `after netting you send ${who} ${rupees(-net)}`
+          : 'you are even after netting';
+    ctx.said.push(`Here's a settle-up message for **${who}** (${summary}). Tap **Send on WhatsApp** or **Copy**.`);
     return { prepared: true, total, youOwe: owe, net };
   },
 

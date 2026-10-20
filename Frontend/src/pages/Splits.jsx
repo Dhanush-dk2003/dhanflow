@@ -42,11 +42,17 @@ function reminderText(person, shares, debts, myName) {
   if (!debts.length) {
     return `Hey ${person.name}, just a friendly reminder. You owe me ${moneyExact(person.pending)} for:\n${shares.map(itemLine).join('\n')}\n\nThanks! – ${myName}`;
   }
+  const outcome =
+    person.net > 0
+      ? `So after netting, you just need to send me ${moneyExact(person.net)}.`
+      : person.net < 0
+        ? `So after netting, I'll send you ${moneyExact(-person.net)}.`
+        : "So after netting, we're even. Nobody needs to pay.";
   return [
     `Hey ${person.name}, settling up our splits:`,
-    `\nYou owe me ${moneyExact(person.pending)}:\n${shares.map(itemLine).join('\n')}`,
+    ...(shares.length ? [`\nYou owe me ${moneyExact(person.pending)}:\n${shares.map(itemLine).join('\n')}`] : []),
     `\nI owe you ${moneyExact(person.owe)}:\n${debts.map(itemLine).join('\n')}`,
-    `\nSo after netting, you just need to send me ${moneyExact(person.net)}.`,
+    `\n${outcome}`,
     `\nThanks! – ${myName}`,
   ].join('\n');
 }
@@ -109,12 +115,12 @@ function PersonCard({ person, active, onClick, onRemind, onSettle }) {
       )}
 
       {person.total > 0 && <ProgressBar percent={progress} color={palette.neon} className="mt-4 h-1.5" />}
-      <div className="mt-2 flex items-center justify-between gap-2">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-[11px] text-white/40">
           {person.total > 0 ? `Paid back ${moneyWhole(person.paid)} of ${moneyWhole(person.total)}` : `You owe ${moneyWhole(person.owe)}`}
         </p>
-        <div className="flex gap-1.5">
-          {person.net > 0 && (
+        <div className="ml-auto flex shrink-0 gap-1.5">
+          {!settled && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -310,7 +316,7 @@ export default function Splits() {
                 <Scale size={12} /> Settle up
               </button>
             )}
-            {selectedPerson && selectedPerson.net > 0 && (
+            {selectedPerson && (selectedPerson.pending > 0 || selectedPerson.owe > 0) && (
               <button className="chip" onClick={() => copyReminder(selectedPerson)}>
                 <Copy size={12} /> Copy reminder
               </button>
