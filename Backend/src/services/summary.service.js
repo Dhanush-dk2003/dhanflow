@@ -1,7 +1,8 @@
 import { Account } from '../models/Account.js';
 import { Transaction } from '../models/Transaction.js';
 import { dateRangeMatch, round2 } from '../utils/helpers.js';
-import { isDebit, isIncome, isRepayment, myShareExpr, sumIf } from '../utils/expressions.js';
+import { getSettings } from './settings.service.js';
+import { affectsBalance, isDebit, isIncome, isRepayment, myShareExpr, sumIf } from '../utils/expressions.js';
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -31,9 +32,9 @@ export async function getSummary({ from, to, months }) {
   const now = new Date();
   const trendStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1));
 
-  const [allTime, [opening], [period], [pending], byCategory, trendRows, recent] = await Promise.all([
+  const [allTime, [opening], [period], [pending], [owe], byCategory, trendRows, recent] = await Promise.all([
     Transaction.aggregate([
-      { $match: { type: { $in: ['credit', 'debit'] } } },
+      { $match: { type: { $in: ['credit', 'debit'] }, ...affectsBalance } },
       { $group: { _id: '$type', total: { $sum: '$amount' } } },
     ]),
 
@@ -65,6 +66,11 @@ export async function getSummary({ from, to, months }) {
           people: { $addToSet: { $toLower: '$participants.name' } },
         },
       },
+    ]),
+
+    Transaction.aggregate([
+      { $match: { 'owedTo.isPaid': false } },
+      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 }, people: { $addToSet: { $toLower: '$owedTo.name' } } } },
     ]),
 
     Transaction.aggregate([
@@ -117,6 +123,11 @@ export async function getSummary({ from, to, months }) {
       count: pending?.count ?? 0,
       people: pending?.people?.length ?? 0,
     },
+    owe: {
+      total: round2(owe?.total),
+      count: owe?.count ?? 0,
+      people: owe?.people?.length ?? 0,
+    },
     byCategory: byCategory.map((c) => ({
       category: c._id,
       spent: round2(c.spent),
@@ -129,10 +140,13 @@ export async function getSummary({ from, to, months }) {
   };
 }
 
+/** Categories already used, plus the ones I added myself (`custom`, so they show before first use). */
 export async function getCategories() {
-  const [debit, credit] = await Promise.all([
+  const [debit, credit, settings] = await Promise.all([
     Transaction.distinct('category', { type: 'debit' }),
     Transaction.distinct('category', { type: 'credit' }),
+    getSettings(),
   ]);
-  return { debit, credit };
+  const custom = { debit: settings.customCategories?.debit ?? [], credit: settings.customCategories?.credit ?? [] };
+  return { debit: [...new Set([...custom.debit, ...debit])], credit: [...new Set([...custom.credit, ...credit])], custom };
 }

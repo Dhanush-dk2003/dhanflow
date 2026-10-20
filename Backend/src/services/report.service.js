@@ -108,7 +108,9 @@ const builders = {
         account: t.type === 'transfer' ? `${nameOf(t.account)} → ${nameOf(t.toAccount)}` : nameOf(t.account),
         method: t.type === 'transfer' ? '' : (METHOD_LABELS[t.paymentMethod] ?? ''),
         amount: t.type === 'debit' ? -t.amount : t.amount,
-        splitWith: (t.participants ?? []).map((p) => `${p.name} ₹${p.amount} (${p.isPaid ? 'paid' : 'pending'})`).join('; '),
+        splitWith: t.owedTo
+          ? `Paid by ${t.owedTo.name} (${t.owedTo.isPaid ? 'paid back' : 'I owe'})`
+          : (t.participants ?? []).map((p) => `${p.name} ₹${p.amount} (${p.isPaid ? 'paid' : 'pending'})`).join('; '),
       })),
     };
   },

@@ -37,14 +37,22 @@ export const useSettings = () => useQuery({ queryKey: ['settings'], queryFn: api
 
 export const useAiStatus = () => useQuery({ queryKey: ['ai-status'], queryFn: api.ai.status, staleTime: 5 * 60_000 });
 
+export const useDebts = (params) =>
+  useQuery({ queryKey: ['debts', params], queryFn: () => api.splits.debts(params), placeholderData: keepPreviousData });
+
+/** My own categories come first, so they're always among the quick picks. */
 export const useCategories = () =>
   useQuery({
     queryKey: ['categories'],
     queryFn: api.categories,
-    select: (used) => ({
-      debit: [...new Set([...DEFAULT_CATEGORIES.debit, ...used.debit])],
-      credit: [...new Set([...DEFAULT_CATEGORIES.credit, ...used.credit])],
-    }),
+    select: (used) => {
+      const custom = { debit: used.custom?.debit ?? [], credit: used.custom?.credit ?? [] };
+      return {
+        debit: [...new Set([...custom.debit, ...DEFAULT_CATEGORIES.debit, ...used.debit])],
+        credit: [...new Set([...custom.credit, ...DEFAULT_CATEGORIES.credit, ...used.credit])],
+        custom,
+      };
+    },
   });
 
 /** Money changes ripple into balance, budget, insights and reminders, so refresh everything. */
@@ -111,6 +119,42 @@ export const useSaveBudget = () =>
 export const useResetBudget = () => useAppMutation((month) => api.budgets.reset(month), 'Budget reset');
 
 export const useSaveSettings = () => useAppMutation((data) => api.settings.update(data), 'Settings saved');
+
+export const usePayDebt = () =>
+  useAppMutation(
+    ({ transactionId, body }) => api.splits.payDebt(transactionId, body),
+    ({ name }) => `Marked as paid back to ${name ?? 'them'}`,
+  );
+
+export const useUnpayDebt = () =>
+  useAppMutation(
+    ({ transactionId }) => api.splits.unpayDebt(transactionId),
+    ({ name }) => `You owe ${name ?? 'them'} again`,
+  );
+
+export const useSettleUp = () => useAppMutation((body) => api.splits.settle(body));
+
+const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Adds (or with `remove`, deletes) one of my own categories for debits or credits. */
+export function useCustomCategory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ type, name, remove = false }) => {
+      const current = (await api.settings.get()).customCategories ?? {};
+      const lists = { debit: current.debit ?? [], credit: current.credit ?? [] };
+      const others = lists[type].filter((c) => !sameName(c, name));
+      lists[type] = remove ? others : [name.trim(), ...others];
+      return api.settings.update({ customCategories: lists });
+    },
+    onSuccess: (settings, { name, remove }) => {
+      queryClient.setQueryData(['settings'], settings);
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
+      toast.success(remove ? `Removed "${name}"` : `Added "${name.trim()}" to your categories`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+}
 
 export const useCommitImport = () => useAppMutation((data) => api.imports.commit(data));
 

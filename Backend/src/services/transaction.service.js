@@ -90,7 +90,8 @@ export async function getTransaction(id) {
   return txn;
 }
 
-export async function createTransaction({ participants = [], ...data }) {
+export async function createTransaction({ participants = [], owedTo, ...data }) {
+  if (owedTo) data.owedTo = { name: owedTo.name, isPaid: false, paidAt: null };
   if (data.type === 'transfer') {
     data.category = TRANSFER_CATEGORY;
   } else {
@@ -125,7 +126,7 @@ function mergeParticipants(existing, incoming) {
   return [...paid.map((p) => p.toObject()), ...pending];
 }
 
-export async function updateTransaction(id, { participants, ...fields }) {
+export async function updateTransaction(id, { participants, owedTo, ...fields }) {
   const txn = await Transaction.findById(id);
   if (!txn) throw ApiError.notFound('Transaction not found');
   if (txn.settlementOf?.transaction) {
@@ -140,6 +141,17 @@ export async function updateTransaction(id, { participants, ...fields }) {
 
   txn.set(fields);
   if (participants) txn.participants = mergeParticipants(txn.participants, participants);
+  // Paid-back status is managed from Collect; an edit only changes who it's owed to, or removes it.
+  if (owedTo === null) txn.owedTo = undefined;
+  else if (owedTo) {
+    txn.owedTo = txn.owedTo
+      ? { name: owedTo.name, isPaid: txn.owedTo.isPaid, paidAt: txn.owedTo.paidAt }
+      : { name: owedTo.name, isPaid: false, paidAt: null };
+  }
+  if (txn.owedTo && txn.type !== 'debit') throw ApiError.badRequest('Only expenses can be paid by someone else');
+  if (txn.owedTo && txn.participants.length) {
+    throw ApiError.badRequest('An entry someone else paid for cannot also be split by you');
+  }
 
   if (txn.type === 'transfer') {
     if (!txn.account || !txn.toAccount) throw ApiError.badRequest('Pick both accounts for a transfer');

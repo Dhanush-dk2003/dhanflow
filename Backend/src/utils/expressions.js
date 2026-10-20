@@ -9,4 +9,8 @@ export const myShareExpr = {
   $subtract: ['$amount', { $sum: { $ifNull: ['$participants.amount', []] } }],
 };
 
+// $match for entries that moved money. Unpaid "I owe them" entries are spending,
+// but nothing has left an account until I pay the person back.
+export const affectsBalance = { 'owedTo.isPaid': { $ne: false } };
+
 export const sumIf = (cond, value = '$amount') => ({ $sum: { $cond: [cond, value, 0] } });

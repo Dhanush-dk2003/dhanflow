@@ -25,6 +25,17 @@ const settlementSchema = new Schema(
   { _id: false },
 );
 
+// Someone else paid the bill and I owe them my share (the transaction amount).
+// It counts as my spending straight away, but money leaves my account only when I pay them back.
+const owedToSchema = new Schema(
+  {
+    name: { type: String, required: true, trim: true, maxlength: 60 },
+    isPaid: { type: Boolean, default: false },
+    paidAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
 const voiceNoteInfoSchema = new Schema(
   {
     duration: { type: Number, default: 0 },
@@ -48,6 +59,7 @@ const transactionSchema = new Schema(
     toAccount: { type: Schema.Types.ObjectId, ref: 'Account', default: undefined },
     // People who owe me a part of this (debit) transaction.
     participants: { type: [participantSchema], default: [] },
+    owedTo: { type: owedToSchema, default: undefined },
     // Present only on credit entries auto-created when a split participant pays back.
     settlementOf: { type: settlementSchema, default: undefined },
     // Set on entries imported from a statement (UPI/UTR reference or a content hash),
@@ -65,6 +77,7 @@ transactionSchema.index({ category: 1, date: -1 });
 transactionSchema.index({ account: 1, date: -1 });
 transactionSchema.index({ toAccount: 1 }, { sparse: true });
 transactionSchema.index({ 'participants.isPaid': 1 });
+transactionSchema.index({ 'owedTo.isPaid': 1 }, { sparse: true });
 transactionSchema.index({ 'settlementOf.transaction': 1 }, { sparse: true });
 transactionSchema.index({ importRef: 1 }, { unique: true, sparse: true });
 

@@ -20,3 +20,22 @@ export const unpay = async (req, res) => {
   const { transactionId, participantId } = req.valid.params;
   res.json(await service.markUnpaid(transactionId, participantId));
 };
+
+export const debts = async (req, res) => {
+  res.json(await service.listDebts(req.valid.query));
+};
+
+export const payDebt = async (req, res) => {
+  res.json(await service.payDebt(req.valid.params.transactionId, req.valid.body));
+};
+
+export const unpayDebt = async (req, res) => {
+  res.json(await service.unpayDebt(req.valid.params.transactionId));
+};
+
+export const settle = async (req, res) => {
+  const { name, ...options } = req.valid.body;
+  const result = await service.settleUp(name, options);
+  await Promise.all(result.shares.map((id) => resolveOverdue(id)));
+  res.json(result);
+};

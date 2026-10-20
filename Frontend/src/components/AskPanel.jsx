@@ -18,7 +18,7 @@ const STORE_KEY = 'dhanflow-ask-chats';
 const WIDE_KEY = 'dhanflow-ask-wide';
 const MAX_CHATS = 30;
 const MAX_SENT_MESSAGES = 40;
-const CHANGES_DATA = new Set(['created', 'updated', 'split', 'budget', 'account', 'settings', 'notifications']);
+const CHANGES_DATA = new Set(['created', 'updated', 'split', 'settled', 'budget', 'account', 'settings', 'notifications']);
 const PAGE_ROUTES = { home: '/', activity: '/transactions', accounts: '/accounts', collect: '/splits', budget: '/budget', import: '/import' };
 
 const SUGGESTIONS = [

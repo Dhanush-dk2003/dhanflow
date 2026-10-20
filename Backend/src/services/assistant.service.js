@@ -6,7 +6,7 @@ import { chatCompletion } from './ai.service.js';
 import { getSummary } from './summary.service.js';
 import { buildFilter, createTransaction, getTransaction, listTransactions, updateTransaction } from './transaction.service.js';
 import { accountNames, createAccount, getDefaultAccountId, listAccounts, updateAccount } from './account.service.js';
-import { listPeople, listSplits, markPaid, markUnpaid } from './split.service.js';
+import { listDebts, listPeople, listSplits, markPaid, markUnpaid, settleUp } from './split.service.js';
 import { findEffectiveBudget, getBudgetStatus, saveBudget } from './budget.service.js';
 import { getSettings, updateSettings } from './settings.service.js';
 import { categorizeRows, categoryOptions } from './categorize.service.js';
@@ -84,7 +84,10 @@ const TOOLS = [
     },
   ),
   fn('list_accounts', 'All accounts (bank, cash, wallet, card) with current balance and this month in/out.'),
-  fn('money_owed_to_me', 'Friends who still owe money from split expenses: pending total per person and each unpaid share (entry id, what it was for, date, amount).'),
+  fn(
+    'money_owed_to_me',
+    'Money between the user and friends: per person what they still owe (unpaid split shares), what the user owes them (bills they paid), and the net (positive = they pay the user), with each unpaid item.',
+  ),
   fn(
     'budget_status',
     'Budget for a month: total limit, spent, remaining, projected month-end spend, safe daily spend, and per-category limits.',
@@ -117,6 +120,10 @@ const TOOLS = [
               description: "Friends who owe part of a debit: each person's share",
               items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' } }, required: ['name', 'amount'] },
             },
+            paid_by: {
+              type: 'string',
+              description: "Debits only: the friend who paid the bill, so the user owes them. amount is then the user's own share. Not with split_with",
+            },
             not_split_repayment: {
               type: 'boolean',
               description: 'Only set after the app warned that this person has a pending split and the user confirmed this money is unrelated to it',
@@ -147,8 +154,19 @@ const TOOLS = [
           'Debits only: the full new list of friends who owe a share (replaces the unpaid ones; people who already paid back always stay). Empty list = no split.',
         items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' } }, required: ['name', 'amount'] },
       },
+      paid_by: { type: 'string', description: 'Debits only: the friend who paid it (the user owes them). "me" = the user paid it themselves' },
     },
     ['id'],
+  ),
+  fn(
+    'settle_up',
+    'Settle everything between the user and one friend, netting both sides like PhonePe/Splitwise: their unpaid split shares are marked paid and the bills they paid for the user are marked paid back, so only the difference moves (they owe 100, user owes 50 → +50). Also use it when the user paid a friend back.',
+    {
+      person: { type: 'string' },
+      date: dateParam('Day they settled (default today)'),
+      account: { type: 'string', description: 'Account the net money came into or left (default: the account on the bills)' },
+    },
+    ['person'],
   ),
   fn(
     'collect_split',
@@ -389,6 +407,7 @@ const entryCard = (t, names) => ({
   account: names.get(String(t.account)),
   toAccount: t.toAccount ? names.get(String(t.toAccount)) : undefined,
   splitWith: splitText(t.participants),
+  paidBy: t.owedTo ? `${t.owedTo.name}${t.owedTo.isPaid ? ' (paid back)' : ' (I owe)'}` : undefined,
 });
 const accountCard = (a) => ({
   id: String(a._id),
@@ -401,7 +420,7 @@ const accountCard = (a) => ({
 const memoLine = (t) =>
   `id=${t.id} ${SIGN[t.type]}₹${t.amount} ${t.type === 'transfer' ? `${t.account}→${t.toAccount}` : t.category}${t.description ? ` "${t.description}"` : ''} ${t.date}${
     t.splitWith ? ` split: ${t.splitWith}` : ''
-  }`;
+  }${t.paidBy ? ` paid by ${t.paidBy}` : ''}`;
 
 const METHOD_NAMES = { upi: 'UPI', cash: 'Cash', card: 'Card', bank: 'Bank', other: 'Other' };
 const countEntries = (n) => `${n} ${n === 1 ? 'entry' : 'entries'}`;
@@ -416,7 +435,7 @@ const entryText = (t) =>
     ? `**${rupees(t.amount)}** moved ${t.account} → ${t.toAccount}${t.description ? ` (${t.description})` : ''} · ${whenText(t.date)}`
     : `**${t.type === 'credit' ? '+' : ''}${rupees(t.amount)}** ${t.description || t.category}${t.description ? ` (${t.category})` : ''} · ${whenText(t.date)}${
         t.splitWith ? `, split with ${t.splitWith}` : ''
-      }`;
+      }${t.paidBy ? `, paid by ${t.paidBy}` : ''}`;
 const monthName = (month) => new Date(`${month}-01T00:00:00Z`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
 /** Matches a category name to an existing one (any case), else keeps the new name. */
@@ -439,8 +458,17 @@ const entryInput = z.object({
   to_account: z.string().trim().max(40).optional(),
   payment_method: z.enum(PAYMENT_METHODS).optional(),
   split_with: splitList.optional(),
+  paid_by: z.string().trim().min(1).max(60).optional(),
   not_split_repayment: z.boolean().optional(),
 });
+
+const paidByMe = (name) => /^(me|myself|i|self)$/i.test(name);
+
+/** Reuses the spelling of a friend already in the app ("ram" → "Ram"). */
+async function knownPersonName(name) {
+  const people = await listPeople();
+  return people.find((p) => p.name.toLowerCase() === name.trim().toLowerCase())?.name ?? name.trim();
+}
 
 /** People with unpaid split shares whose name appears in the text, e.g. "Got 300 from Ravi". */
 async function pendingPeopleIn(texts) {
@@ -523,6 +551,8 @@ const actionRunners = {
     const guesses = entries.map((e) => ({ type: e.type, description: e.description ?? '', learnKey: e.description ? merchantKey(e.description) : null }));
     await categorizeRows(guesses.filter((g, i) => !entries[i].category && !isTransfer(entries[i])));
 
+    for (const e of entries) if (e.paid_by && !paidByMe(e.paid_by)) e.paid_by = await knownPersonName(e.paid_by);
+
     const prepared = entries.map((e, i) => {
       const from = isTransfer(e) ? (accountId(e.account) ?? (defaultAccount ? String(defaultAccount) : undefined)) : accountId(e.account);
       if (isTransfer(e) && !from) throw new ToolError('Which account did the money leave? Ask the user.');
@@ -536,6 +566,7 @@ const actionRunners = {
         account: from,
         toAccount: isTransfer(e) ? accountId(e.to_account) : undefined,
         participants: e.type === 'debit' ? e.split_with : undefined,
+        owedTo: e.type === 'debit' && e.paid_by && !paidByMe(e.paid_by) ? { name: e.paid_by } : undefined,
       });
     });
     const created = [];
@@ -565,6 +596,7 @@ const actionRunners = {
         to_account: z.string().trim().max(40).optional(),
         payment_method: z.enum(PAYMENT_METHODS).optional(),
         split_with: splitList.optional(),
+        paid_by: z.string().trim().min(1).max(60).optional(),
       })
       .parse(args);
     const before = await getTransaction(input.id);
@@ -582,6 +614,14 @@ const actionRunners = {
           account: input.account ? String((await accountByName(input.account))._id) : undefined,
           toAccount: input.to_account ? String((await accountByName(input.to_account))._id) : undefined,
           participants: input.split_with,
+          owedTo:
+            input.paid_by === undefined
+              ? undefined
+              : paidByMe(input.paid_by)
+                ? before.owedTo
+                  ? null
+                  : undefined
+                : { name: await knownPersonName(input.paid_by) },
         }).filter(([, v]) => v !== undefined),
       ),
     );
@@ -594,6 +634,7 @@ const actionRunners = {
       if (k === 'date') return day(before.date);
       if (k === 'account' || k === 'toAccount') return before[k] ? String(before[k]) : null;
       if (k === 'participants') return (before.participants ?? []).filter((p) => !p.isPaid).map(({ name, amount }) => ({ name, amount }));
+      if (k === 'owedTo') return before.owedTo ? { name: before.owedTo.name } : null;
       return before[k] ?? null;
     };
     const undo = Object.fromEntries(Object.keys(changes).map((k) => [k, undoValue(k)]));
@@ -608,8 +649,9 @@ const actionRunners = {
       date: whenText,
       type: (v) => ({ credit: 'income', debit: 'expense', transfer: 'transfer' })[v],
       splitWith: (v) => (v === '—' ? 'no split' : `split ${v}`),
+      paidBy: (v) => (v === '—' ? 'paid by me' : `paid by ${v}`),
     };
-    const diffs = ['amount', 'description', 'category', 'date', 'account', 'toAccount', 'type', 'splitWith']
+    const diffs = ['amount', 'description', 'category', 'date', 'account', 'toAccount', 'type', 'splitWith', 'paidBy']
       .filter((k) => was[k] !== now[k])
       .map((k) => `${(show[k] ?? String)(was[k] ?? '—')} → ${(show[k] ?? String)(now[k] ?? '—')}`);
     if (changes.paymentMethod && changes.paymentMethod !== before.paymentMethod) diffs.push(`paid by ${METHOD_NAMES[changes.paymentMethod]}`);
@@ -709,6 +751,23 @@ const actionRunners = {
     ctx.memo.push(`Marked not paid: ${done.map((s) => `${s.name} ₹${s.amount} for ${s.for} (entry id=${s.transactionId})`).join('; ')}`);
     ctx.said.push(`Marked **${done[0].name}**'s ${rupees(done[0].amount)} for ${done[0].for} as not paid and removed its repayment entry.`);
     return { reopened: done };
+  },
+
+  async settle_up(args, ctx) {
+    const q = z
+      .object({ person: z.string().trim().min(1).max(60), date: isoDate.optional(), account: z.string().trim().max(40).optional() })
+      .parse(args);
+    const account = q.account ? String((await accountByName(q.account))._id) : undefined;
+    const r = await settleUp(q.person, { date: q.date ? new Date(`${q.date}T00:00:00Z`) : undefined, account });
+    await Promise.all(r.shares.map((id) => resolveOverdue(id)));
+    ctx.actions.push({ type: 'settled', name: r.name, received: r.received, paid: r.paid, net: r.net });
+    ctx.memo.push(`Settled up with ${r.name}: they owed ₹${r.received}, I owed ₹${r.paid}, net ₹${r.net}`);
+    const outcome =
+      r.net > 0 ? `**+${rupees(r.net)}** added to your balance` : r.net < 0 ? `**${rupees(-r.net)}** paid from your balance` : "you were even, so no money moved";
+    ctx.said.push(
+      `Settled up with **${r.name}**${r.received && r.paid ? `: they owed ${rupees(r.received)}, you owed ${rupees(r.paid)}` : ''}. ${outcome.charAt(0).toUpperCase()}${outcome.slice(1)}.`,
+    );
+    return r;
   },
 
   async set_budget(args, ctx) {
@@ -1010,11 +1069,25 @@ const actionRunners = {
     const total = round2(shares.reduce((s, x) => s + x.amount, 0));
     const who = shares[0].name;
     const dated = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
-    const lines = shares.map((s) => `• ${s.description || s.category} (${dated(s.date)}): ${exact(s.amount)}`);
-    const text = `Hey ${who}, just a friendly reminder. You owe me ${exact(total)} for:\n${lines.join('\n')}\n\nThanks! – ${me}`;
-    ctx.actions.push({ type: 'remind', person: who, amount: total, count: shares.length, text });
-    ctx.said.push(`Here's a reminder for **${who}** (${rupees(total)} from ${shares.length} ${shares.length === 1 ? 'split' : 'splits'}). Tap **Send on WhatsApp** or **Copy**.`);
-    return { prepared: true, total };
+    const line = (s) => `• ${s.description || s.category} (${dated(s.date)}): ${exact(s.amount)}`;
+    const { items: debts } = await listDebts({ status: 'pending', person: who });
+    const owe = round2(debts.reduce((s, x) => s + x.amount, 0));
+    const net = round2(total - owe);
+    const outcome =
+      net > 0 ? `you just need to send me ${exact(net)}` : net < 0 ? `I'll send you ${exact(-net)}` : "we're even. Nobody needs to pay";
+    const text = owe
+      ? `Hey ${who}, settling up our splits:\n\nYou owe me ${exact(total)}:\n${shares.map(line).join('\n')}\n\nI owe you ${exact(owe)}:\n${debts.map(line).join('\n')}\n\nSo after netting, ${outcome}.\n\nThanks! – ${me}`
+      : `Hey ${who}, just a friendly reminder. You owe me ${exact(total)} for:\n${shares.map(line).join('\n')}\n\nThanks! – ${me}`;
+    ctx.actions.push({ type: 'remind', person: who, amount: Math.abs(net), count: shares.length, text });
+    const summary = !owe
+      ? `${rupees(total)} from ${shares.length} ${shares.length === 1 ? 'split' : 'splits'}`
+      : net > 0
+        ? `${who} sends you ${rupees(net)} after netting the ${rupees(owe)} you owe`
+        : net < 0
+          ? `after netting you send ${who} ${rupees(-net)}`
+          : 'you are even after netting';
+    ctx.said.push(`Here's a settle-up message for **${who}** (${summary}). Tap **Send on WhatsApp** or **Copy**.`);
+    return { prepared: true, total, youOwe: owe, net };
   },
 
   async app_control(args, ctx) {
@@ -1098,6 +1171,7 @@ const runners = {
       period: { from, to, ...s.period },
       byCategory: s.byCategory.slice(0, 15),
       owedToMe: s.pending,
+      iOweFriends: s.owe,
       balanceNow: s.balance,
     };
   },
@@ -1215,17 +1289,22 @@ const runners = {
   },
 
   async money_owed_to_me() {
-    const [people, { items }] = await Promise.all([listPeople(), listSplits({ status: 'pending' })]);
+    const [people, { items }, { items: debts }] = await Promise.all([
+      listPeople(),
+      listSplits({ status: 'pending' }),
+      listDebts({ status: 'pending' }),
+    ]);
+    const of = (list, p) => list.filter((s) => s.name.toLowerCase() === p.name.toLowerCase()).slice(0, 15);
     return people
-      .filter((p) => p.pending > 0)
+      .filter((p) => p.pending > 0 || p.owe > 0)
       .map((p) => ({
         name: p.name,
-        pending: p.pending,
+        theyOweMe: p.pending,
+        iOweThem: p.owe || undefined,
+        net: p.net,
         lastActivity: day(p.lastActivity),
-        unpaidShares: items
-          .filter((s) => s.name.toLowerCase() === p.name.toLowerCase())
-          .slice(0, 15)
-          .map(shareInfo),
+        unpaidShares: of(items, p).map(shareInfo),
+        billsTheyPaidForMe: p.owe ? of(debts, p).map(shareInfo) : undefined,
       }));
   },
 
@@ -1281,7 +1360,7 @@ async function systemPrompt(name) {
   ]);
   const accountList = accounts.map((a) => (a.isDefault ? `${a.name} (default)` : a.name));
 
-  return `You are DhanFlow, ${name}'s personal money assistant inside their expense tracker. You can read their data AND do anything ${name} can do in the app: add, edit and delete entries, transfers between accounts, split expenses, record friends paying back and remind them, budgets, accounts, settings, notifications, app controls (theme, hide amounts, lock, pages), charts, tables and exports (Excel, CSV, PDF, Word). Today is ${weekday}, ${today}. Money is in Indian rupees.
+  return `You are DhanFlow, ${name}'s personal money assistant inside their expense tracker. You can read their data AND do anything ${name} can do in the app: add, edit and delete entries, transfers between accounts, split expenses, bills friends paid for ${name}, record paying back both ways, settle up and remind friends, budgets, accounts, settings, notifications, app controls (theme, hide amounts, lock, pages), charts, tables and exports (Excel, CSV, PDF, Word). Today is ${weekday}, ${today}. Money is in Indian rupees.
 Spending categories: ${listOrNone(categories.debit)}. Income categories: ${listOrNone(categories.credit)}. Accounts: ${listOrNone(accountList)}.
 
 Answering questions:
@@ -1295,12 +1374,14 @@ Adding entries (add_entries):
 - Date defaults to today; "yesterday", "last Friday", "on 5th" etc. you convert yourself. Account defaults to the default one. Pick the closest listed category, or leave it out when unsure.
 - Spent/paid/bought = debit. Got/received/salary/earned = credit. Several items in one message = several entries in one call.
 - "Split with Ravi and Anu" on ₹900 means split_with Ravi 300 and Anu 300 (equal shares including ${name}) unless amounts are given.
+- When a friend paid the bill ("Ram paid 300 for my lunch", "I owe Ram 50 for dinner", "Ram's PhonePe split, my share 50"), add a debit of ${name}'s share only with paid_by: Ram. It counts as spending now and leaves the balance only when ${name} pays Ram back.
 - Moving money between ${name}'s own accounts (ATM withdrawal to Cash, paying the card bill from the bank, wallet top-up, "moved 5000 from HDFC to savings") is type transfer with account (from) and to_account. It is not spending or income.
 
 Splits:
 - When someone pays ${name} back ("Ravi paid me back", "got 300 from Ravi for dinner", "Anu settled up", "Ravi sent his share"), call collect_split, never add_entries. It marks their share paid and books the repayment, just like Mark paid on the Splits page. Pass amount if given; pass all if they paid everything.
 - If collect_split says the amount doesn't match or asks which share, show the user the unpaid shares briefly and ask. If the person owes nothing, ask whether it's someone else or separate income.
 - "Ravi didn't actually pay" / undo a repayment = reopen_split.
+- Money goes both ways, netted per person: if Ram owes ${name} 100 and ${name} owes Ram 50, Ram only pays 50. money_owed_to_me shows theyOweMe, iOweThem and net. "Settle up with Ram", "Ram sent the 50 after netting" or "I paid Ram back" = settle_up (it clears both sides and only the net moves).
 - To split an existing expense, add or remove people, or change shares, use update_entry with split_with: the full new list of unpaid people (check current shares with find_transactions first).
 
 Changing or deleting entries:

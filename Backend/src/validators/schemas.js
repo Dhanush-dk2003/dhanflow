@@ -30,9 +30,22 @@ const transactionBase = z.object({
   account: accountRef.optional(),
   toAccount: accountRef.optional(),
   participants: z.array(participantInput).max(50).optional(),
+  // Someone else paid; the amount is my share and I owe it to them. null removes it on update.
+  owedTo: z.object({ name: z.string().trim().min(1, 'Who paid?').max(60) }).nullable().optional(),
 });
 
+function checkOwedTo(data, ctx) {
+  if (!data.owedTo) return;
+  if (data.type && data.type !== 'debit') {
+    ctx.addIssue({ code: 'custom', path: ['owedTo'], message: 'Only expenses can be paid by someone else' });
+  }
+  if (data.participants?.length) {
+    ctx.addIssue({ code: 'custom', path: ['owedTo'], message: 'An entry someone else paid for cannot also be split by you' });
+  }
+}
+
 export const createTransactionSchema = transactionBase.superRefine((data, ctx) => {
+  checkOwedTo(data, ctx);
   const participants = data.participants ?? [];
   if (data.type === 'transfer') {
     if (!data.account) ctx.addIssue({ code: 'custom', path: ['account'], message: 'Pick the account the money leaves' });
@@ -53,7 +66,21 @@ export const createTransactionSchema = transactionBase.superRefine((data, ctx) =
 
 export const updateTransactionSchema = transactionBase
   .partial()
-  .refine((data) => Object.keys(data).length > 0, { message: 'Nothing to update' });
+  .refine((data) => Object.keys(data).length > 0, { message: 'Nothing to update' })
+  .superRefine(checkOwedTo);
+
+export const settleBodySchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  date: optionalDate,
+  account: accountRef.optional(),
+});
+
+export const debtParamSchema = z.object({ transactionId: objectId });
+
+export const debtListQuerySchema = z.object({
+  status: z.enum(['pending', 'paid', 'all']).default('pending'),
+  person: z.string().trim().max(60).optional(),
+});
 
 export const idParamSchema = z.object({ id: objectId });
 
@@ -115,11 +142,17 @@ export const notificationQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(30),
 });
 
+const customCategoryList = z
+  .array(z.string().trim().min(1).max(40))
+  .max(50, 'Up to 50 categories of your own')
+  .transform((list) => list.filter((c, i) => list.findIndex((x) => x.toLowerCase() === c.toLowerCase()) === i));
+
 export const settingsBodySchema = z
   .object({
     name: z.string().trim().min(1).max(40),
     reminderAfterDays: z.coerce.number().int().min(1).max(60),
     monthEndReminder: z.boolean(),
+    customCategories: z.object({ debit: customCategoryList, credit: customCategoryList }),
   })
   .partial()
   .refine((data) => Object.keys(data).length > 0, { message: 'Nothing to update' });

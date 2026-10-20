@@ -37,6 +37,15 @@ function TxnIcon({ txn }) {
 }
 
 function SplitInfo({ txn }) {
+  if (txn.owedTo) {
+    return (
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-white/45">
+        <HandCoins size={12} />
+        <span>{txn.owedTo.name} paid · your share</span>
+        {txn.owedTo.isPaid ? <Badge tone="emerald">paid back</Badge> : <Badge tone="amber">you owe {txn.owedTo.name}</Badge>}
+      </div>
+    );
+  }
   const participants = txn.participants ?? [];
   if (!participants.length) return null;
   const owed = participants.reduce((s, p) => s + p.amount, 0);

@@ -90,6 +90,10 @@ export const api = {
       request(`/splits/${transactionId}/participants/${participantId}/pay`, { method: 'PATCH', body }),
     unpay: (transactionId, participantId) =>
       request(`/splits/${transactionId}/participants/${participantId}/unpay`, { method: 'PATCH' }),
+    debts: (params) => request('/splits/debts', { params }),
+    payDebt: (transactionId, body = {}) => request(`/splits/debts/${transactionId}/pay`, { method: 'PATCH', body }),
+    unpayDebt: (transactionId) => request(`/splits/debts/${transactionId}/unpay`, { method: 'PATCH' }),
+    settle: (body) => request('/splits/settle', { method: 'POST', body }),
   },
 
   accounts: {

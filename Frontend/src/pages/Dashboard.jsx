@@ -163,18 +163,32 @@ function BalanceCard({ summary }) {
             </div>
           </div>
         )}
-        {summary.pending.total > 0 && (
-          <div className="mt-auto pt-5">
-            <Link
-              to="/splits"
-              className="group flex items-center justify-between gap-2 rounded-2xl border border-orchid/25 bg-orchid/10 px-3.5 py-2.5 text-sm text-orchid transition hover:bg-orchid/15"
-            >
-              <span>
-                <span className="num font-semibold">{moneyWhole(summary.pending.total)}</span> with {summary.pending.people}{' '}
-                {summary.pending.people === 1 ? 'friend' : 'friends'}
-              </span>
-              <ArrowRight size={15} className="transition group-hover:translate-x-1" />
-            </Link>
+        {(summary.pending.total > 0 || summary.owe?.total > 0) && (
+          <div className="mt-auto space-y-2 pt-5">
+            {summary.pending.total > 0 && (
+              <Link
+                to="/splits"
+                className="group flex items-center justify-between gap-2 rounded-2xl border border-orchid/25 bg-orchid/10 px-3.5 py-2.5 text-sm text-orchid transition hover:bg-orchid/15"
+              >
+                <span>
+                  <span className="num font-semibold">{moneyWhole(summary.pending.total)}</span> with {summary.pending.people}{' '}
+                  {summary.pending.people === 1 ? 'friend' : 'friends'}
+                </span>
+                <ArrowRight size={15} className="transition group-hover:translate-x-1" />
+              </Link>
+            )}
+            {summary.owe?.total > 0 && (
+              <Link
+                to="/splits"
+                className="group flex items-center justify-between gap-2 rounded-2xl border border-amber-300/25 bg-amber-300/10 px-3.5 py-2.5 text-sm text-amber-300 transition hover:bg-amber-300/15"
+              >
+                <span>
+                  You owe <span className="num font-semibold">{moneyWhole(summary.owe.total)}</span> to {summary.owe.people}{' '}
+                  {summary.owe.people === 1 ? 'friend' : 'friends'}
+                </span>
+                <ArrowRight size={15} className="transition group-hover:translate-x-1" />
+              </Link>
+            )}
           </div>
         )}
       </div>
@@ -381,7 +395,7 @@ export default function Dashboard() {
   const { data: settings } = useSettings();
   const { data: people = [] } = usePeople();
   const { openTransaction } = useUI();
-  const owing = people.filter((p) => p.pending > 0).slice(0, 5);
+  const owing = people.filter((p) => p.net !== 0 && (p.pending > 0 || p.owe > 0)).slice(0, 5);
   const name = insights?.name ?? settings?.name ?? BRAND.owner;
 
   return (
@@ -469,10 +483,17 @@ export default function Dashboard() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-medium text-white">{p.name}</p>
                         <p className="text-xs text-white/40">
-                          {p.pendingCount} pending {p.pendingCount === 1 ? 'split' : 'splits'}
+                          {p.owe > 0 && p.pending > 0
+                            ? `owes ${moneyWhole(p.pending)} · you owe ${moneyWhole(p.owe)}`
+                            : p.owe > 0
+                              ? 'you owe them'
+                              : `${p.pendingCount} pending ${p.pendingCount === 1 ? 'split' : 'splits'}`}
                         </p>
                       </div>
-                      <p className="num font-semibold text-orchid">{money(p.pending)}</p>
+                      <p className={`num font-semibold ${p.net > 0 ? 'text-orchid' : 'text-amber-300'}`}>
+                        {p.net < 0 ? '−' : ''}
+                        {money(Math.abs(p.net))}
+                      </p>
                     </li>
                   ))}
                 </ul>
