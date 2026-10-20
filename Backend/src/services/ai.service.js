@@ -22,13 +22,8 @@ function msUntilQuotaReset(now = new Date()) {
 /** Reads a 429 body: daily quota vs short-term rate limit, and how long until it clears. */
 function parseRateLimit(body) {
   if (/PerDay/i.test(body)) return { daily: true, waitMs: msUntilQuotaReset() };
-  const gemini = body.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
-  if (gemini) return { daily: false, waitMs: Math.ceil(Number(gemini[1])) * 1000 };
-  // Groq: "Please try again in 7.66s" / "in 3m12.5s" / "in 1h2m3s"
-  const other = body.match(/(?:retry|try again) in (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i);
-  if (!other) return { daily: false, waitMs: 60_000 };
-  const [, h = 0, m = 0, s] = other;
-  return { daily: false, waitMs: Math.ceil(Number(h) * 3600 + Number(m) * 60 + Number(s)) * 1000 };
+  const delay = body.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/) ?? body.match(/retry in (\d+(?:\.\d+)?)s/i);
+  return { daily: false, waitMs: delay ? Math.ceil(Number(delay[1])) * 1000 : 60_000 };
 }
 
 function waitText(ms) {
@@ -87,7 +82,6 @@ export async function chatCompletion({ messages, tools, json = false, temperatur
   };
   const models = [env.ai.model, ...env.ai.fallbackModels.filter((m) => m !== env.ai.model)];
   const limits = [];
-  let failure = null;
 
   for (const model of models) {
     const known = exhausted.get(model);
@@ -119,12 +113,12 @@ export async function chatCompletion({ messages, tools, json = false, temperatur
     if (res.status === 401 || res.status === 403) throw new ApiError(502, `${env.ai.label} rejected the API key. Check AI_API_KEY`);
     if (res.status === 404 && isFallback) continue;
     if (res.status === 404) throw new ApiError(502, `The model "${model}" wasn't found. Set AI_MODEL to a current model name`);
-    // Overloaded (503) or too big for this model's per-minute budget (413): the next model may still answer.
-    failure = new ApiError(502, `${env.ai.label} returned an error (${res.status}). Try again`);
+    throw new ApiError(502, `${env.ai.label} returned an error (${res.status}). Try again`);
   }
 
-  if (limits.length) throw rateLimitError(limits);
-  throw failure ?? new ApiError(502, `None of the AI models could be used. Check AI_MODEL and AI_FALLBACK_MODELS`);
+  throw limits.length
+    ? rateLimitError(limits)
+    : new ApiError(502, `None of the AI models could be used. Check AI_MODEL and AI_FALLBACK_MODELS`);
 }
 
 function parseJson(text = '') {
