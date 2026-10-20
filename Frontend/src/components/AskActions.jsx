@@ -391,6 +391,37 @@ function SplitCard({ action, onAct }) {
   );
 }
 
+function SettledCard({ action }) {
+  const { name, received, paid, net } = action;
+  return (
+    <Shell
+      icon={HandCoins}
+      tone="text-neon"
+      title={`Settled up with ${name}`}
+      footer={
+        <Link to="/splits" className="btn-ghost px-3 py-1.5 text-xs">
+          Open Collect
+        </Link>
+      }
+    >
+      <ul className="space-y-1 pt-1 text-xs">
+        {[
+          received > 0 && [`${name} owed you`, money(received)],
+          paid > 0 && [`You owed ${name}`, `− ${money(paid)}`],
+          [net > 0 ? 'Added to balance' : net < 0 ? 'Paid from balance' : 'Net', money(Math.abs(net))],
+        ]
+          .filter(Boolean)
+          .map(([label, value]) => (
+            <li key={label} className="flex justify-between gap-3">
+              <span className="text-white/45">{label}</span>
+              <span className="num font-medium text-white">{value}</span>
+            </li>
+          ))}
+      </ul>
+    </Shell>
+  );
+}
+
 function BudgetCard({ action, onAct }) {
   const [busy, run] = useRun(() => onAct('undo'));
   const { before, after } = action;
@@ -634,6 +665,8 @@ export default function AskAction({ action, onAct, onClose }) {
       return <TableCard action={action} onAct={onAct} />;
     case 'split':
       return <SplitCard action={action} onAct={onAct} />;
+    case 'settled':
+      return <SettledCard action={action} />;
     case 'budget':
       return <BudgetCard action={action} onAct={onAct} />;
     case 'account':

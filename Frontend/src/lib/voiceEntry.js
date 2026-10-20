@@ -109,7 +109,25 @@ function findSplit(text) {
   return names.length ? { names, match: m[0] } : null;
 }
 
-const FILLER = /\b(i|i've|have|has|had|just|spent|spend|paid|pay|paying|bought|buy|gave|give|for|on|of|the|a|an|to|at|rupees?|rs|inr|bucks|money|using|via|through|by|with upi|from|my|received|receive|got|get|earned|credited|added|add|expense|income|in|cash|card|upi|gpay|google pay|phonepe|paytm)\b/gi;
+const NOT_NAMES = /^(i|we|me|you|he|she|they|it|someone|somebody|my|our)$/i;
+
+/** "I owe Ram 50", "paid by Ram", "Ram paid 300 for my lunch" → the friend who paid for me. */
+function findOwedTo(text) {
+  const patterns = [
+    [/\b(?:i )?owe (\w+)/i, (m) => m[0]],
+    [/\bpaid by (\w+)/i, (m) => m[0]],
+    [/\b(\w+) paid\b.{0,30}?\bfor (?:me|my)\b/i, (m) => `${m[1]} paid`],
+  ];
+  for (const [rx, spoken] of patterns) {
+    const m = text.match(rx);
+    if (m && !NOT_NAMES.test(m[1]) && !/^\d/.test(m[1])) {
+      return { name: m[1].charAt(0).toUpperCase() + m[1].slice(1), match: spoken(m) };
+    }
+  }
+  return null;
+}
+
+const FILLER = /\b(i|me|i've|have|has|had|just|spent|spend|paid|pay|paying|bought|buy|gave|give|for|on|of|the|a|an|to|at|rupees?|rs|inr|bucks|money|using|via|through|by|with upi|from|my|received|receive|got|get|earned|credited|added|add|expense|income|in|cash|card|upi|gpay|google pay|phonepe|paytm)\b/gi;
 
 /**
  * Turns a spoken sentence ("spent 450 on petrol yesterday in cash") into new-entry form fields.
@@ -118,8 +136,14 @@ const FILLER = /\b(i|i've|have|has|had|just|spent|spend|paid|pay|paying|bought|b
 export function parseSpokenEntry(text, categories) {
   const patch = {};
   let rest = ` ${text} `;
-  const type = TRANSFER_WORDS.test(text) ? null : CREDIT_WORDS.test(text) ? 'credit' : 'debit';
+  const owedTo = TRANSFER_WORDS.test(text) ? null : findOwedTo(text);
+  const type = owedTo ? 'debit' : TRANSFER_WORDS.test(text) ? null : CREDIT_WORDS.test(text) ? 'credit' : 'debit';
   if (type) patch.type = type;
+  if (owedTo) {
+    patch.paidBy = 'other';
+    patch.owedTo = owedTo.name;
+    rest = rest.replace(owedTo.match, ' ');
+  }
 
   const amount = findAmount(text);
   if (amount) {
@@ -131,7 +155,7 @@ export function parseSpokenEntry(text, categories) {
     patch.date = date.date;
     rest = rest.replace(date.match, ' ');
   }
-  const split = type === 'debit' ? findSplit(rest) : null;
+  const split = type === 'debit' && !owedTo ? findSplit(rest) : null;
   if (split) rest = rest.replace(split.match, ' ');
   const method = findMethod(text);
   if (method) patch.paymentMethod = method;

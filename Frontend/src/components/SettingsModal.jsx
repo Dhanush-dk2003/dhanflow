@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BellRing, Keyboard, ShieldCheck } from 'lucide-react';
-import { useSaveSettings, useSettings } from '../hooks/queries';
+import { BellRing, Keyboard, ShieldCheck, Tags, X } from 'lucide-react';
+import { useCategories, useCustomCategory, useSaveSettings, useSettings } from '../hooks/queries';
 import { useNotificationPermission } from '../hooks/useBrowserNotifications';
 import { useAuth } from '../context/AuthContext';
 import { useUI } from '../context/UIContext';
+import AddOwnCategory from './AddOwnCategory';
 import { LockFlow, SecuritySection } from './SecuritySettings';
 import { Modal, Segmented, Spinner } from './ui';
 
@@ -43,6 +44,47 @@ function ThemeChoice() {
   );
 }
 
+function MyCategories() {
+  const { data: categories } = useCategories();
+  const remove = useCustomCategory();
+  const groups = [
+    { type: 'debit', label: 'Spending' },
+    { type: 'credit', label: 'Income' },
+  ];
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+      <p className="flex items-center gap-2 text-sm font-medium text-white">
+        <Tags size={15} className="text-orchid" /> Your categories
+      </p>
+      <p className="mb-2 text-xs text-white/45">Offered in the entry form and budget. Removing one keeps past entries as they are.</p>
+      {groups.map(({ type, label }) => {
+        const own = categories?.custom?.[type] ?? [];
+        return (
+          <div key={type} className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="w-16 text-[11px] text-white/40">{label}</span>
+            {own.map((c) => (
+              <span key={c} className="chip gap-1 pr-1">
+                {c}
+                <button
+                  type="button"
+                  className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-white/50 hover:bg-white/10 hover:text-rose-300"
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate({ type, name: c, remove: true })}
+                  aria-label={`Remove ${c}`}
+                  title={`Remove ${c}`}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+            <AddOwnCategory type={type} known={categories?.[type] ?? []} onAdded={() => {}} label="Add" />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SettingsForm({ settings, onDone }) {
   const [form, setForm] = useState({
     name: settings.name,
@@ -68,6 +110,8 @@ function SettingsForm({ settings, onDone }) {
       </div>
 
       <ThemeChoice />
+
+      <MyCategories />
 
       <div>
         <label className="label" htmlFor="s-days">Remind me when someone hasn't paid back after</label>

@@ -7,6 +7,7 @@ import { DEFAULT_CATEGORIES, SPLIT_REPAYMENT } from '../lib/constants';
 import { currentMonthKey, money, moneyWhole, monthTitle, shiftMonthKey } from '../lib/format';
 import { Card, EmptyState, ErrorState, LoadingBlock, Modal, PageHeader, ProgressBar, RingGauge, Spinner } from '../components/ui';
 import { useConfirm } from '../components/ConfirmDialog';
+import AddOwnCategory from '../components/AddOwnCategory';
 
 const toDraft = (status) => ({
   total: status?.budget?.total ? String(status.budget.total) : '',
@@ -18,7 +19,10 @@ function BudgetEditor({ status, month, onDone }) {
   const [error, setError] = useState('');
   const save = useSaveBudget();
   const { data: categories = DEFAULT_CATEGORIES } = useCategories();
-  const options = categories.debit.filter((c) => c !== SPLIT_REPAYMENT && !draft.categories.some((d) => d.category === c));
+  const known = categories.debit.filter((c) => c !== SPLIT_REPAYMENT);
+  const options = known.filter((c) => !draft.categories.some((d) => d.category === c));
+  const ownCount = (categories.custom?.debit ?? []).length;
+  const addRow = (category) => setDraft((d) => ({ ...d, categories: [...d.categories, { category, limit: '', fresh: true }] }));
 
   const categorySum = draft.categories.reduce((s, c) => s + (Number(c.limit) || 0), 0);
 
@@ -101,6 +105,7 @@ function BudgetEditor({ status, month, onDone }) {
               />
               <input
                 inputMode="decimal"
+                autoFocus={c.fresh}
                 className="input num w-32 shrink-0"
                 placeholder="₹ limit"
                 value={c.limit}
@@ -124,16 +129,12 @@ function BudgetEditor({ status, month, onDone }) {
           </datalist>
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {options.slice(0, 6).map((c) => (
-            <button
-              key={c}
-              type="button"
-              className="chip"
-              onClick={() => setDraft({ ...draft, categories: [...draft.categories, { category: c, limit: '' }] })}
-            >
+          {options.slice(0, Math.max(6, ownCount + 4)).map((c) => (
+            <button key={c} type="button" className="chip" onClick={() => addRow(c)}>
               <Plus size={12} /> {c}
             </button>
           ))}
+          <AddOwnCategory known={known} onAdded={(c) => !draft.categories.some((d) => d.category === c) && addRow(c)} />
         </div>
       </div>
 

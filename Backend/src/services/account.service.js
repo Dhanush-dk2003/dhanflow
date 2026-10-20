@@ -4,7 +4,7 @@ import { Transaction } from '../models/Transaction.js';
 import { ApiError } from '../utils/ApiError.js';
 import { currentMonth, monthBounds } from '../utils/dates.js';
 import { escapeRegex, round2 } from '../utils/helpers.js';
-import { sumIf } from '../utils/expressions.js';
+import { affectsBalance, sumIf } from '../utils/expressions.js';
 
 const typeIs = (type) => ({ $eq: ['$type', type] });
 
@@ -51,6 +51,7 @@ export async function listAccounts() {
   const [accounts, outgoing, incoming] = await Promise.all([
     Account.find().sort({ archived: 1, isDefault: -1, createdAt: 1 }).lean(),
     Transaction.aggregate([
+      { $match: affectsBalance },
       {
         $group: {
           _id: '$account',

@@ -19,6 +19,8 @@ Personal expense tracker: credits and debits, live balance, spending by category
   - **Summary** sheet: the filters used, entry count, money in/out/net, and spending by category.
 - **Confirm dialogs**: deleting an entry or account, undoing a repayment, removing a budget and linking older entries ask in an in-app dialog (Cancel / Confirm) instead of the browser's pop-up. Destructive actions start focused on Cancel, and Escape cancels.
 - **Collect page**: per-person balances, WhatsApp/copy reminder, "Got it" to mark paid (choose which account received the money).
+- **When a friend paid (you owe them)**: in a new expense pick **Who paid? → A friend paid**, enter their name and only your share. It counts in your spending and budget right away, but your balance only drops when you pay them back. Collect then nets both sides per person, like a PhonePe split: if Ram owes you ₹100 and you owe Ram ₹50, his card shows **Net · owes you ₹50**, the reminder says "after netting, you just need to send me ₹50", and **Settle up** clears everything between you in one go so only the ₹50 moves in the account you pick. Bills you owe are also listed under **You owe**, where you can pay them back one by one (and undo). Voice works too: "I owe Ram 50 for dinner", "Ram paid 300 for my lunch", "petrol 450 paid by Anu".
+- **Your own categories**: tap **+ Your own** under the category chips in the entry form or the budget editor to add one (e.g. Gym, Pet care). It's saved and shown first from then on; remove or add more in Settings → Your categories.
 - **Light / dark theme**: toggle in the top bar, in Settings, or press `T`. Saved per device.
 - **Voice entry and voice notes**: tap the 🎤 at the top of a new entry and say it, e.g. "spent 450 on petrol yesterday in cash", "paid 1200 for dinner split with Ravi and Anu", "received 50000 salary", "uber 2k last friday". Amount (2k, 1.5 lakh), money in or out, date (today, yesterday, 3 days ago, last Friday, 5th October), category, payment method (saying "cash" also picks your cash account), description and equal splits are filled in for you to check and save.
   - The recording is **saved with the entry** as a voice note (with its transcript). Play it from the 🎵 chip in Activity or in the entry's edit form, remove it with the bin, or record a new one when editing. Notes are stored in MongoDB, up to 1 MB each (about 2 minutes; recording stops by itself after 60 s).
@@ -43,7 +45,7 @@ Personal expense tracker: credits and debits, live balance, spending by category
   - **Questions** ("where did my money go last month?") are answered from lookups of your data: totals, search, trends, top payees, accounts, money owed, budgets.
   - **Add entries**: "spent 250 on chai yesterday and got 2000 from Ravi for freelance work" saves both. If the amount or what it was for is missing, it asks for just that. Category, date (today), account (default) and splits are filled in or taken from what you say.
   - **Edit and delete**: "change the petrol one to 650, paid in cash". Every add or edit shows a card with **Undo**. Deleting only shows a Delete button; nothing is removed until you press it.
-  - **Splits**: "Ravi paid me back for dinner" marks Ravi's share as paid and books the Split Repayment, exactly like **Mark paid** on Collect (it never adds it as plain income). Amounts that cover several shares are matched oldest first; if an amount doesn't match, it lists what's owed and asks. "Split the petrol with Kiran" adds a split to an existing entry; "Ravi didn't actually pay" re-opens it.
+  - **Splits**: "Ravi paid me back for dinner" marks Ravi's share as paid and books the Split Repayment, exactly like **Mark paid** on Collect (it never adds it as plain income). Amounts that cover several shares are matched oldest first; if an amount doesn't match, it lists what's owed and asks. "Split the petrol with Kiran" adds a split to an existing entry; "Ravi didn't actually pay" re-opens it. "Ram paid 300 for my lunch" records what you owe Ram; "settle up with Ram" nets both sides and moves only the difference; reminders and "who owes me" are netted too.
   - **Everything else you can do by hand**: transfers between your accounts ("withdrew 2000 from the ATM"), budgets ("food limit 6000"), and accounts ("add a Paytm wallet with 750", "make Cash the default", "archive the old card"). Each shows a card with Undo.
   - **Charts**: "chart my spending by category this month", "income vs spending for 6 months". Drawn in the chat from real data (donut, bars or trend; switchable), grouped by category, day, week, month, payee, person, account or payment method.
   - **Split charts**: "chart who owes me, when they paid and how fast" draws what each person paid back vs still owes, average days to pay back, how long pending shares have been waiting, and repayments over time, plus a table of every share with bill date, paid date and days taken. For anything the built-in charts don't cover, it draws a custom chart from numbers it looked up.
@@ -94,8 +96,12 @@ The Vite dev server proxies `/api` to the backend, so no CORS setup is needed in
 | Total spent | Full amount of debits in the period |
 | My actual spending | Debits minus the parts other people owe you |
 | To collect | Unpaid split shares |
+| You owe | Expenses a friend paid for you that you haven't paid back |
+| Net (per person) | To collect from them − you owe them |
 
 When you split a debit, each person's share is stored on the transaction. Marking a share as **paid** creates a `Split Repayment` credit, which raises your balance. Undoing it (or deleting that repayment) removes the credit and re-opens the debt. Deleting a split expense also deletes its repayments.
+
+An expense a friend paid is a debit of your share with `owedTo: { name, isPaid, paidAt }`. It counts as spending immediately but is left out of the balance and account balances until it's marked paid back; then it comes out of the account it was paid from. **Settle up** marks the person's pending shares paid (repayment credits) and your debts to them paid back, all in the same account, so the account moves by exactly the net amount.
 
 ## API
 
@@ -111,11 +117,11 @@ Base URL: `/api`. When the app lock is on, every route except `/health` and the 
 | PATCH | `/auth/settings` | Change the secret: `{ currentSecret, method, secret }` |
 | DELETE | `/auth/setup` | Remove the lock: `{ currentSecret }` |
 | GET | `/summary?from&to&months` | Balance, period totals, category breakdown, monthly trend, recent |
-| GET | `/categories` | Categories in use, by type |
+| GET | `/categories` | Categories in use plus your own, by type (`{ debit, credit, custom: { debit, credit } }`) |
 | GET | `/transactions?type&category&search&from&to&split&account&page&limit&sort` | Paginated list + totals for the filter (`type` can be `transfer`; `account=none` = not linked) |
 | GET | `/transactions/export?...` | Streams the filtered list as an Excel workbook (`.xlsx`, same filters as the list) |
 | GET | `/reports/:report?format=json\|xlsx\|csv\|pdf\|docx&from&to&type&category&search&split&account&person&status&month&sort` | `report` is `transactions`, `splits`, `people`, `accounts`, `budget`, `categories` or `monthly`. JSON gives `{ title, subtitle, columns, rows, count }`; the other formats download a file (up to 20,000 rows) |
-| POST | `/transactions` | Create (`participants: [{ name, amount }]` to split a debit) |
+| POST | `/transactions` | Create (`participants: [{ name, amount }]` to split a debit, or `owedTo: { name }` when a friend paid it and the amount is your share; `owedTo: null` on PATCH removes it) |
 | GET | `/transactions/:id` | Get one |
 | PATCH | `/transactions/:id` | Partial update (paid participants are locked) |
 | DELETE | `/transactions/:id` | Delete (also deletes its voice note) |
@@ -123,9 +129,13 @@ Base URL: `/api`. When the app lock is on, every route except `/health` and the 
 | GET | `/transactions/:id/voice` | The recording, with its original content type |
 | DELETE | `/transactions/:id/voice` | Remove the voice note |
 | GET | `/splits?status=pending\|paid\|all&person` | Flattened split shares |
-| GET | `/splits/people` | Per-person totals: owed, paid, pending |
+| GET | `/splits/people` | Per-person totals: `total`, `paid`, `pending` (they owe you), `owe` (you owe them), `net` = pending − owe |
 | PATCH | `/splits/:transactionId/participants/:participantId/pay` | Mark paid (body: `{ date?, paymentMethod?, account? }`, account defaults to the bill's) |
 | PATCH | `/splits/:transactionId/participants/:participantId/unpay` | Undo payment |
+| GET | `/splits/debts?status=pending\|paid\|all&person` | Expenses friends paid for you, with `totals: { pending, paid }` |
+| PATCH | `/splits/debts/:transactionId/pay` | Mark paid back (body: `{ date?, paymentMethod?, account? }`, account defaults to the entry's) |
+| PATCH | `/splits/debts/:transactionId/unpay` | Undo paying back |
+| POST | `/splits/settle` | Settle up with one person (`{ name, date?, account? }`): clears both sides, returns `{ received, paid, net }` |
 | GET | `/accounts` | Accounts with balance, this month's in/out, entry count; plus `unassigned` and `total` |
 | POST | `/accounts` | Create (`{ name, type?, openingBalance?, color?, isDefault? }`) |
 | PATCH | `/accounts/:id` | Update, set default, archive/restore (`{ archived }`) |
@@ -141,12 +151,12 @@ Base URL: `/api`. When the app lock is on, every route except `/health` and the 
 | PATCH | `/notifications/:id/read` | Mark one read |
 | DELETE | `/notifications/read` | Clear read notifications |
 | DELETE | `/notifications/:id` | Delete one |
-| GET | `/settings` | Name, reminder interval, month-end toggle |
+| GET | `/settings` | Name, reminder interval, month-end toggle, `customCategories: { debit, credit }` |
 | PATCH | `/settings` | Update settings |
 | POST | `/import/preview` | Multipart: `file` (PDF, xlsx/xls/ods, csv/tsv, docx or txt; up to 15 MB), `password?` (PDF only), `ai=off\|auto\|force`. Returns `{ source, format, formatLabel, pages?, rows, categories, summary: { ready, skipped, skippedRows, found, verdict }, ai, warnings }`; saves nothing. 400 `PASSWORD_REQUIRED` / `WRONG_PASSWORD` / `NO_ROWS` (with `columns` and `skipped` explaining what's missing) |
 | POST | `/import/commit` | `{ account?, rows: [{ date, type, amount, category, description?, paymentMethod?, importRef?, learnKey? }] }` → `{ imported, skipped, learned }` |
 | GET | `/ai/status` | `{ enabled, provider, model }` |
-| POST | `/ai/chat` | `{ messages: [{ role: 'user'\|'assistant', content }] }` (last one from the user) → `{ reply, toolsUsed, actions, memo }`. `actions` are cards to render: `created`, `updated` (with `undo` fields), `confirm_delete`, `split`, `budget`, `account` (each with undo data), `chart` (`{ chart, title, series, data, total }`), `table` (a report plus its `params`), `export` (`{ report, format, params }` for `/reports/:report`), `settings` (with `undo`), `confirm` (`kind`: `delete_account`, `remove_budget` or `clear_notifications`; nothing happens until the user confirms), `notifications`, `remind` (`{ person, amount, count, text }`), `app` (`{ command, page?, prefill? }`, run by the browser). Send `memo` back in brackets after that reply's content so follow-ups know the entry ids. 503 `AI_DISABLED`, 429 `AI_RATE_LIMIT` |
+| POST | `/ai/chat` | `{ messages: [{ role: 'user'\|'assistant', content }] }` (last one from the user) → `{ reply, toolsUsed, actions, memo }`. `actions` are cards to render: `created`, `updated` (with `undo` fields), `confirm_delete`, `split`, `budget`, `account` (each with undo data), `settled` (`{ name, received, paid, net }`), `chart` (`{ chart, title, series, data, total }`), `table` (a report plus its `params`), `export` (`{ report, format, params }` for `/reports/:report`), `settings` (with `undo`), `confirm` (`kind`: `delete_account`, `remove_budget` or `clear_notifications`; nothing happens until the user confirms), `notifications`, `remind` (`{ person, amount, count, text }`), `app` (`{ command, page?, prefill? }`, run by the browser). Send `memo` back in brackets after that reply's content so follow-ups know the entry ids. 503 `AI_DISABLED`, 429 `AI_RATE_LIMIT` |
 
 Example:
 

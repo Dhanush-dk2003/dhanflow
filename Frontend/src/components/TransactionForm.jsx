@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Divide, Landmark, Lock, Mic, Square, Trash2, UserPlus } from 'lucide-react';
-import { useCategories, useSaveTransaction } from '../hooks/queries';
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Divide, HandCoins, Landmark, Lock, Mic, Square, Trash2, UserPlus } from 'lucide-react';
+import { useCategories, usePeople, useSaveTransaction } from '../hooks/queries';
 import { speechStatus, useSpeech } from '../hooks/useSpeech';
 import { useUI } from '../context/UIContext';
 import { parseSpokenEntry } from '../lib/voiceEntry';
@@ -10,6 +10,7 @@ import { DEFAULT_CATEGORIES, PAYMENT_METHODS, SPLIT_REPAYMENT, TRANSFER } from '
 import { isExpression, tryEvaluate } from '../lib/calc';
 import { localISODate, money, moneyExact, round2, toInputDate } from '../lib/format';
 import { AccountPicker, useAccountData } from './accounts';
+import AddOwnCategory from './AddOwnCategory';
 import { Modal, Spinner } from './ui';
 import { VoiceNotePlayer } from './VoiceNote';
 
@@ -24,6 +25,8 @@ const emptyForm = (prefill) => ({
   toAccount: '',
   isSplit: false,
   participants: [],
+  paidBy: 'me',
+  owedTo: '',
   ...prefill,
 });
 
@@ -43,11 +46,22 @@ const fromTransaction = (t) => ({
     amount: String(p.amount),
     isPaid: p.isPaid,
   })),
+  paidBy: t.owedTo ? 'other' : 'me',
+  owedTo: t.owedTo?.name ?? '',
 });
 
 const amountOf = (v) => tryEvaluate(v) ?? 0;
 
-const FIELD_NAMES = { amount: 'amount', type: 'type', category: 'category', date: 'date', description: 'description', paymentMethod: 'payment', participants: 'split' };
+const FIELD_NAMES = {
+  amount: 'amount',
+  type: 'type',
+  category: 'category',
+  date: 'date',
+  description: 'description',
+  paymentMethod: 'payment',
+  participants: 'split',
+  owedTo: 'who paid',
+};
 
 function heardSummary({ text, fields }, autoFill) {
   if (!text) return "Couldn't make out the words, but the voice note is kept.";
@@ -109,10 +123,16 @@ function TransactionForm({ initial, prefill, onDone }) {
   const { active: activeAccounts, byId, defaultId } = useAccountData();
   const save = useSaveTransaction();
 
+  const { data: people } = usePeople();
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const hasPaidParticipants = form.participants.some((p) => p.isPaid);
   const categoryOptions = (categories[form.type] ?? []).filter((c) => c !== SPLIT_REPAYMENT);
+  const customCategories = categories.custom?.[form.type] ?? [];
+  const quickCategories = categoryOptions.slice(0, Math.max(8, customCategories.length + 5));
   const isTransfer = form.type === 'transfer';
+  const friendPaid = form.type === 'debit' && form.paidBy === 'other';
+  const paidBack = Boolean(initial?.owedTo?.isPaid);
+  const knownName = (name) => people?.find((p) => p.name.toLowerCase() === name.trim().toLowerCase())?.name ?? name.trim();
 
   // An old entry may sit on an archived account; keep it selectable so the edit doesn't silently move it.
   const pickable = useMemo(() => {
@@ -149,9 +169,11 @@ function TransactionForm({ initial, prefill, onDone }) {
     set({
       type,
       category: DEFAULT_CATEGORIES[type][0],
-      ...(type === 'credit' ? { isSplit: false, participants: [] } : {}),
+      ...(type === 'credit' ? { isSplit: false, participants: [], paidBy: 'me' } : {}),
     });
   };
+
+  const setPaidBy = (paidBy) => set(paidBy === 'other' ? { paidBy, isSplit: false, participants: [] } : { paidBy });
 
   const toggleSplit = () => {
     if (form.isSplit) set({ isSplit: false, participants: form.participants.filter((p) => p.isPaid) });
@@ -179,8 +201,9 @@ function TransactionForm({ initial, prefill, onDone }) {
       if (form.account === form.toAccount) return setError('Choose two different accounts');
     }
     if (!form.category.trim()) return setError('Category is required');
+    if (friendPaid && !form.owedTo.trim()) return setError('Who paid for it? Enter their name');
 
-    const participants = form.isSplit ? form.participants : [];
+    const participants = form.isSplit && !friendPaid ? form.participants : [];
     if (participants.some((p) => !p.name.trim() || !(amountOf(p.amount) > 0))) {
       return setError('Every person in the split needs a name and an amount greater than 0');
     }
@@ -203,6 +226,7 @@ function TransactionForm({ initial, prefill, onDone }) {
             name: name.trim(),
             amount: round2(amountOf(a)),
           })),
+          ...(friendPaid ? { owedTo: { name: knownName(form.owedTo) } } : initial?.owedTo ? { owedTo: null } : {}),
         },
         voice: voice ?? (initial?.voiceNote && removeSavedVoice ? { remove: true } : undefined),
       },
@@ -267,7 +291,7 @@ function TransactionForm({ initial, prefill, onDone }) {
       </div>
 
       <div className="rounded-2xl border border-white/[0.08] bg-black/20 px-5 py-4 text-center">
-        <label className="eyebrow" htmlFor="amount">Amount</label>
+        <label className="eyebrow" htmlFor="amount">{friendPaid ? 'Your share' : 'Amount'}</label>
         <div className="mt-1 flex items-center justify-center gap-1">
           <span className={`num text-3xl ${isDebit ? 'text-rose-300' : isTransfer ? 'text-aqua' : 'text-neon'}`}>₹</span>
           <input
@@ -302,7 +326,7 @@ function TransactionForm({ initial, prefill, onDone }) {
           </div>
         ) : (
           <div>
-            <span className="label">{isDebit ? 'Paid from' : 'Received in'}</span>
+            <span className="label">{friendPaid ? (paidBack ? 'Paid back from' : 'Will pay back from') : isDebit ? 'Paid from' : 'Received in'}</span>
             <AccountPicker accounts={pickable} value={form.account} onChange={chooseAccount} />
           </div>
         )
@@ -344,7 +368,7 @@ function TransactionForm({ initial, prefill, onDone }) {
 
       {!isTransfer && (
         <div className="flex flex-wrap gap-1.5">
-          {categoryOptions.slice(0, 8).map((c) => (
+          {quickCategories.map((c) => (
             <button
               key={c}
               type="button"
@@ -354,6 +378,7 @@ function TransactionForm({ initial, prefill, onDone }) {
               {c}
             </button>
           ))}
+          <AddOwnCategory type={form.type} known={categoryOptions} onAdded={(category) => set({ category })} />
         </div>
       )}
 
@@ -389,6 +414,57 @@ function TransactionForm({ initial, prefill, onDone }) {
       </div>
 
       {isDebit && (
+        <div className={`rounded-2xl border transition ${friendPaid ? 'border-amber-300/30 bg-amber-300/[0.05]' : 'border-white/[0.08]'}`}>
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-white">Who paid?</p>
+              <p className="text-xs text-white/45">
+                {friendPaid ? 'A friend paid; you owe them your share' : 'You paid the bill'}
+              </p>
+            </div>
+            <div className="flex gap-1">
+              <button type="button" className={`chip ${!friendPaid ? 'chip-active' : ''}`} onClick={() => setPaidBy('me')}>
+                I paid
+              </button>
+              <button
+                type="button"
+                className={`chip ${friendPaid ? 'chip-active' : ''}`}
+                disabled={hasPaidParticipants}
+                title={hasPaidParticipants ? 'Friends already paid you back for this split' : undefined}
+                onClick={() => setPaidBy('other')}
+              >
+                <HandCoins size={13} /> A friend paid
+              </button>
+            </div>
+          </div>
+          {friendPaid && (
+            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="space-y-2 px-4 pb-4">
+              <input
+                className="input"
+                list="people-options"
+                placeholder="Who paid? e.g. Ram"
+                maxLength={60}
+                value={form.owedTo}
+                onChange={(e) => set({ owedTo: e.target.value })}
+              />
+              <datalist id="people-options">
+                {(people ?? []).map((p) => (
+                  <option key={p.name} value={p.name} />
+                ))}
+              </datalist>
+              <p className="text-xs text-white/45">
+                {paidBack
+                  ? `Already paid back to ${initial.owedTo.name}. Undo it from Collect if needed.`
+                  : `Enter only your share. It counts in your spending now, but leaves your account only when you pay ${
+                      form.owedTo.trim() || 'them'
+                    } back from Collect, where it's netted against what they owe you.`}
+              </p>
+            </motion.div>
+          )}
+        </div>
+      )}
+
+      {isDebit && !friendPaid && (
         <div className={`rounded-2xl border transition ${form.isSplit ? 'border-orchid/30 bg-orchid/[0.05]' : 'border-white/[0.08]'}`}>
           <label className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3">
             <div>
