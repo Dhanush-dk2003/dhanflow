@@ -29,7 +29,7 @@ import { dateRangeMatch, escapeRegex, round2 } from '../utils/helpers.js';
 import { isDebit, isIncome, isRepayment, myShareExpr, sumIf } from '../utils/expressions.js';
 import { currentMonth, shiftMonth, todayISO } from '../utils/dates.js';
 
-const MAX_STEPS = 8;
+const MAX_STEPS = 3;
 const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_NEW_ENTRIES = 50;
 
@@ -1348,93 +1348,276 @@ async function runTool(name, rawArgs, ctx) {
 
 const listOrNone = (list) => list.join(', ') || 'none yet';
 
-async function systemPrompt(name) {
+const QUESTION = /\?|^(how|what|which|when|where|who|why|did|do|does|is|are|can|could|show|list|tell|give)\b/;
+const ADD_WORDS = /\b(spent|spend|paid|pay|bought|buy|got|received|earned|salary|credited|debited|transfer\w*|moved|withdr[ae]w\w*|atm|top.?up|lent)\b|₹\s*\d|\d\s*(rs|rupees)\b/;
+
+/**
+ * Tool groups and the prompt rules that go with them. Only the groups a message needs are sent,
+ * since tool definitions are most of the tokens in every call.
+ */
+const GROUPS = {
+  read: {
+    match: (t) =>
+      QUESTION.test(t) ||
+      /\b(how much|how many|total|spen[dt]|spending|income|earn\w*|expenses?|biggest|largest|top|most|average|compare|summary|overview|balance|saved|savings|budget|owe[sd]?)\b/.test(t),
+    tools: ['get_overview', 'find_transactions', 'spending_over_time', 'top_payees', 'list_accounts', 'budget_status', 'money_owed_to_me'],
+    rules: (n) =>
+      `- "spent" = full amount paid; "myShare" = after friends repay their split. Prefer myShare for "how much did I spend". Transfers between ${n}'s own accounts and split repayments are neither spending nor income.`,
+  },
+  add: {
+    match: (t) => /\b(add|log|record|note down)\b/.test(t) || (!QUESTION.test(t) && ADD_WORDS.test(t)),
+    tools: ['add_entries', 'collect_split'],
+    rules: (n) => `- add_entries needs an amount and what it was for; if either is missing, ask one short question instead. Date defaults to today (convert "yesterday", "last Friday" yourself), account to the default. Spent/paid/bought = debit; got/received/earned = credit; several items = several entries in one call.
+- "Split with Ravi and Anu" on ₹900 = split_with Ravi 300, Anu 300 unless amounts are given. A friend paid the bill = debit of ${n}'s share with paid_by. Moving money between own accounts = transfer with account and to_account.
+- A friend paying ${n} back = collect_split, never add_entries.`,
+  },
+  edit: {
+    match: (t) => /\b(change|edit|update|fix|correct|delete|remove|undo|wrong|instead|mistake)\b/.test(t),
+    tools: ['find_transactions', 'update_entry', 'delete_entries', 'reopen_split'],
+    rules: () =>
+      `- Find the entry with find_transactions (or an id from an earlier [Added …] note), then update_entry; if several match, ask which. delete_entries only shows a Delete button, so never claim it's deleted. Repayment entries: reopen_split, then collect_split.`,
+  },
+  splits: {
+    match: (t) => /\b(split\w*|owe[sd]?|owing|paid (me )?back|pay(s|ing)? back|repa\w*|settle\w*|remind\w*|collect\w*|borrow\w*)\b/.test(t),
+    tools: ['money_owed_to_me', 'collect_split', 'reopen_split', 'settle_up', 'remind_friend', 'find_transactions', 'update_entry'],
+    rules: () =>
+      `- Friend paid back = collect_split (pass amount, or all). Undo = reopen_split. Settle up / "I paid Ram back" = settle_up (nets both sides). money_owed_to_me shows theyOweMe, iOweThem, net. "Remind Ravi" = remind_friend. To change who shares an entry: update_entry with the full split_with list.`,
+  },
+  budget: {
+    match: (t) => /\b(set|change|raise|increase|lower|reduce|cut|remove|reset|delete|make)\b[^.?!]*\b(budget|limit)\b|\bbudget (of|to)\b/.test(t),
+    tools: ['budget_status', 'set_budget', 'remove_budget'],
+    rules: () => `- set_budget changes only what the user mentions (read budget_status first for relative changes). remove_budget deletes a month's budget (user confirms).`,
+  },
+  accounts: {
+    match: (t) =>
+      /\b(add|create|new|rename|archive|restore|delete|remove|make)\b[^.?!]*\b(account|bank|wallet|card)\b|\bopening balance\b|\bdefault account\b/.test(t),
+    tools: ['list_accounts', 'add_account', 'update_account', 'delete_account'],
+    rules: () => `- add_account / update_account (rename, type, opening balance, default, archive). delete_account only works with no entries; otherwise offer to archive.`,
+  },
+  visuals: {
+    match: (t) => /\b(chart|graph|plot|visual\w*|trend\w*|breakdown|pie|bar|table|report|export\w*|download\w*|excel|csv|pdf|word|docx|sheet)\b/.test(t),
+    tools: ['show_chart', 'draw_chart', 'show_table', 'get_report', 'export_file', 'get_overview'],
+    rules: () =>
+      `- Charts: show_chart (call it several times for several charts); if no metric fits, get the numbers with other tools, then draw_chart. Never draw or describe charts in text. Tables: show_table. Files: export_file (default xlsx; Word = docx). Never say the app can't show or export something.`,
+  },
+  settings: {
+    match: (t) => /\b(settings?|notifications?|bell|my name|call me|month.?end)\b/.test(t),
+    tools: ['get_settings', 'update_settings', 'manage_notifications'],
+    rules: () => `- get_settings / update_settings: name, split reminder days, month-end summary. manage_notifications: mark_all_read, clear_read, check_now.`,
+  },
+  app: {
+    match: (t) => /\b(dark|light|theme|hide|unhide|lock|open|go to|calculator|pin|pattern|page|import)\b/.test(t),
+    tools: ['app_control'],
+    rules: () =>
+      `- app_control: dark/light mode, hide/show amounts, lock, open a page, add-entry form, calculator, Settings, lock setup (you never see the PIN). To import a statement, tell the user to tap 📎.`,
+  },
+};
+const FALLBACK_GROUPS = ['read', 'add'];
+const toolsByName = new Map(TOOLS.map((t) => [t.function.name, t]));
+
+function pickGroups(text) {
+  const t = text.toLowerCase();
+  const groups = Object.keys(GROUPS).filter((g) => GROUPS[g].match(t));
+  return groups.length ? groups : FALLBACK_GROUPS;
+}
+
+const toolsFor = (groups) => [...new Set(groups.flatMap((g) => GROUPS[g].tools))].map((name) => toolsByName.get(name));
+
+async function systemPrompt(name, groups, text) {
   const today = todayISO();
   const month = today.slice(0, 7);
   const lastMonth = shiftMonth(month, -1);
   const lastMonthEnd = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 0)).toISOString().slice(0, 10);
   const weekday = new Date(`${today}T00:00:00Z`).toLocaleDateString('en-IN', { weekday: 'long', timeZone: 'UTC' });
+  const has = (...g) => g.some((x) => groups.includes(x));
+
+  // Categories and account names come from the database, so they're only looked up when the request needs them.
+  const needsCategories = has('add', 'edit', 'budget');
+  const needsAccounts = needsCategories || has('accounts') || /\b(account|bank|card|wallet|cash)\b/i.test(text);
   const [categories, accounts] = await Promise.all([
-    categoryOptions(),
-    Account.find({ archived: { $ne: true } }, { name: 1, isDefault: 1 }).sort({ isDefault: -1, createdAt: 1 }).lean(),
+    needsCategories ? categoryOptions() : null,
+    needsAccounts ? Account.find({ archived: { $ne: true } }, { name: 1, isDefault: 1 }).sort({ isDefault: -1, createdAt: 1 }).lean() : null,
   ]);
-  const accountList = accounts.map((a) => (a.isDefault ? `${a.name} (default)` : a.name));
+  const facts = [
+    categories && `Spending categories: ${listOrNone(categories.debit)}. Income categories: ${listOrNone(categories.credit)}.`,
+    accounts && `Accounts: ${listOrNone(accounts.map((a) => (a.isDefault ? `${a.name} (default)` : a.name)))}.`,
+  ].filter(Boolean);
 
-  return `You are DhanFlow, ${name}'s personal money assistant inside their expense tracker. You can read their data AND do anything ${name} can do in the app: add, edit and delete entries, transfers between accounts, split expenses, bills friends paid for ${name}, record paying back both ways, settle up and remind friends, budgets, accounts, settings, notifications, app controls (theme, hide amounts, lock, pages), charts, tables and exports (Excel, CSV, PDF, Word). Today is ${weekday}, ${today}. Money is in Indian rupees.
-Spending categories: ${listOrNone(categories.debit)}. Income categories: ${listOrNone(categories.credit)}. Accounts: ${listOrNone(accountList)}.
+  return [
+    `You are DhanFlow, ${name}'s money assistant in their expense tracker. Today is ${weekday}, ${today}; this month = ${month}-01 to ${today}; last month = ${lastMonth}-01 to ${lastMonthEnd}; weeks start Monday. Money is in Indian rupees.`,
+    ...facts,
+    `- Get every number from tools; never invent figures, dates or names. If the data can't answer, say so.`,
+    ...groups.map((g) => GROUPS[g].rules(name)),
+    `- Be short and warm. Amounts like ₹1,25,000; **bold** the key figure. After an action, confirm in one line. Reply in the user's language.`,
+    `- [Bracketed] lines in earlier replies are app notes with entry ids: use them, never write them or show ids.`,
+  ].join('\n');
+}
 
-Answering questions:
-- Get every number from the tools. Never guess or invent figures, dates or names. If the data can't answer the question, say so plainly.
-- Work out date ranges yourself: this month = ${month}-01 to ${today}; last month = ${lastMonth}-01 to ${lastMonthEnd}; weeks start on Monday. "All time" means no dates.
-- "spent" is the full amount paid; "myShare" is what ${name} really spent after friends repay their split. Prefer myShare for "how much did I spend", and mention splits when they matter.
-- Transfers between ${name}'s own accounts are neither spending nor income. Repayments are friends paying back splits, not income.
+const GREETING = /^(hi+|hey+|hello+|helo|hii+|yo|namaste|good\s*(morning|afternoon|evening|night))[\s!.,]*(there|dhanflow|buddy|bro)?[\s!.]*$/i;
+const THANKS = /^(thanks?|thank\s*you|thx|ty|ok(ay)?|cool|great|nice|got\s*it|fine)[\s!.,]*(so\s*much|a\s*lot)?[\s!.]*$/i;
 
-Adding entries (add_entries):
-- An entry needs an amount and what it was for. If either is missing, ask for exactly what's missing in one short question and don't call the tool yet. Don't ask about anything else.
-- Date defaults to today; "yesterday", "last Friday", "on 5th" etc. you convert yourself. Account defaults to the default one. Pick the closest listed category, or leave it out when unsure.
-- Spent/paid/bought = debit. Got/received/salary/earned = credit. Several items in one message = several entries in one call.
-- "Split with Ravi and Anu" on ₹900 means split_with Ravi 300 and Anu 300 (equal shares including ${name}) unless amounts are given.
-- When a friend paid the bill ("Ram paid 300 for my lunch", "I owe Ram 50 for dinner", "Ram's PhonePe split, my share 50"), add a debit of ${name}'s share only with paid_by: Ram. It counts as spending now and leaves the balance only when ${name} pays Ram back.
-- Moving money between ${name}'s own accounts (ATM withdrawal to Cash, paying the card bill from the bank, wallet top-up, "moved 5000 from HDFC to savings") is type transfer with account (from) and to_account. It is not spending or income.
+/** Canned replies for greetings and thanks, so they don't spend free-tier AI tokens. */
+function smallTalkReply(text = '', name) {
+  const t = text.trim();
+  if (GREETING.test(t)) {
+    const who = name && name !== 'you' ? ` ${name}` : '';
+    return `Hi${who}! Ask me about your spending, add an entry, split a bill, or get a chart or export.`;
+  }
+  if (THANKS.test(t)) return 'Anytime! Let me know if you need anything else.';
+  return null;
+}
 
-Splits:
-- When someone pays ${name} back ("Ravi paid me back", "got 300 from Ravi for dinner", "Anu settled up", "Ravi sent his share"), call collect_split, never add_entries. It marks their share paid and books the repayment, just like Mark paid on the Splits page. Pass amount if given; pass all if they paid everything.
-- If collect_split says the amount doesn't match or asks which share, show the user the unpaid shares briefly and ask. If the person owes nothing, ask whether it's someone else or separate income.
-- "Ravi didn't actually pay" / undo a repayment = reopen_split.
-- Money goes both ways, netted per person: if Ram owes ${name} 100 and ${name} owes Ram 50, Ram only pays 50. money_owed_to_me shows theyOweMe, iOweThem and net. "Settle up with Ram", "Ram sent the 50 after netting" or "I paid Ram back" = settle_up (it clears both sides and only the net moves).
-- To split an existing expense, add or remove people, or change shares, use update_entry with split_with: the full new list of unpaid people (check current shares with find_transactions first).
+const normalizeCommand = (text) =>
+  text
+    .toLowerCase()
+    .trim()
+    .replace(/^(please|pls|can you|could you|kindly)\s+/, '')
+    .replace(/[\s.!]*(please|pls)?[\s.!]*$/, '');
 
-Changing or deleting entries:
-- Find the entry with find_transactions (or use an id from an earlier [Added …] note), then update_entry. If several entries could match, list them briefly and ask which one.
-- delete_entries only shows a Delete button; the user confirms. Never claim something is deleted.
-- Repayment entries can't be edited directly: use reopen_split, then collect_split again if needed.
+const APP_COMMANDS = [
+  [/^(?:(?:switch|change|turn|go|set|enable|use)\s+)?(?:(?:on|to|into)\s+)?(?:the\s+)?dark(?:\s+(?:mode|theme))?(?:\s+on)?$/, { command: 'dark_mode' }],
+  [/^(?:(?:switch|change|turn|go|set|enable|use)\s+)?(?:(?:on|to|into)\s+)?(?:the\s+)?light(?:\s+(?:mode|theme))?(?:\s+on)?$/, { command: 'light_mode' }],
+  [/^hide\s+(?:the\s+|my\s+)?(?:amounts?|numbers|money|balances?)$/, { command: 'hide_amounts' }],
+  [/^(?:show|unhide)\s+(?:the\s+|my\s+)?(?:amounts?|numbers|money|balances?)$/, { command: 'show_amounts' }],
+  [/^lock(?:\s+the)?(?:\s+app)?$/, { command: 'lock_app' }],
+  [/^(?:open\s+(?:the\s+)?)?calculator$/, { command: 'open_calculator' }],
+  [/^open\s+(?:the\s+)?settings$/, { command: 'open_settings' }],
+];
+const PAGE_COMMAND = /^(?:open|go\s+to)\s+(?:the\s+)?(home|activity|accounts|collect|budget|import)(?:\s+page)?$/;
 
-Budgets and accounts:
-- set_budget changes the monthly total and/or category limits (only what the user mentions). Use budget_status to read the current budget first if the user asks for a relative change ("raise food by 1000").
-- add_account and update_account (rename, type, opening balance, make default, archive/restore) work like the Accounts page. delete_account only works for accounts with no entries; otherwise offer to archive.
-- remove_budget deletes a month's budget completely (the user confirms); to change limits use set_budget.
+const QUICK_VERB = String.raw`(?:(add|spent|spend|paid|pay|bought|got|received|earned)\s+)?`;
+const QUICK_AMOUNT = String.raw`(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{2,3})+|\d{1,8})(?:\.(\d{1,2}))?\s*(?:₹|rs\.?|rupees|inr|\/-)?`;
+const QUICK_WHAT = String.raw`([a-z][a-z'&-]*(?:\s+[a-z][a-z'&-]*){0,3})`;
+const QUICK_AMOUNT_FIRST = new RegExp(`^${QUICK_VERB}${QUICK_AMOUNT}\\s+(?:(?:on|for)\\s+)?${QUICK_WHAT}$`);
+const QUICK_WHAT_FIRST = new RegExp(`^${QUICK_VERB}${QUICK_WHAT}\\s+${QUICK_AMOUNT}$`);
+// Anything that hints at people, accounts, splits or a question goes to the AI instead.
+const NOT_QUICK =
+  /\b(with|from|to|by|and|or|split\w*|owe\w*|back|account|bank|card|upi|cash|atm|transfer\w*|withdr\w*|deposit\w*|budget|each|per|me|my|him|her|them|friends?|for|on|of|in|at|every|daily|monthly|loan|lent|borrow\w*|how|what|much|many|which|when|where|who|why|did|total|show|list|add|spent|spend|paid|pay|bought|got|received|earned|today|yesterday)\b/;
+const INCOME_WORDS = /\b(salary|income|refund|cashback|interest|bonus|dividend|stipend)\b/;
 
-App, settings and reminders:
-- get_settings / update_settings: the name the app uses, split reminder days, month-end summary. manage_notifications: mark all read, clear read ones, check for new reminders now.
-- "Remind Ravi" / "send Ravi a reminder" = remind_friend (WhatsApp message card).
-- Dark/light mode, hide/show amounts, lock the app, open a page (home, activity, accounts, collect, budget, import), open the add-entry form, calculator, Settings, app lock setup = app_control. To import a statement, tell the user to tap 📎 (or open the import page).
-- You can't see or change the PIN/pattern: open_lock_setup lets the user do it.
+/** "add ₹250 petrol", "spent 120 on tea yesterday", "petrol 250": one plain entry, saved without the AI. */
+function parseQuickAdd(command) {
+  if (command.includes('?')) return null;
+  let text = command;
+  let date = todayISO();
+  const when = text.match(/^(today|yesterday)\s+|\s+(today|yesterday)$/);
+  if (when) {
+    text = text.replace(when[0], '').trim();
+    if ((when[1] || when[2]) === 'yesterday') date = new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  }
+  let m = text.match(QUICK_AMOUNT_FIRST);
+  let verb, whole, paise, what;
+  if (m) [, verb, whole, paise, what] = m;
+  else if ((m = text.match(QUICK_WHAT_FIRST))) [, verb, what, whole, paise] = m;
+  else return null;
 
-Charts, tables and exports (never say the app can't show or export something; these tools cover everything):
-- For any chart, graph, plot, visual, trend or breakdown request, call show_chart. It covers spending/income AND splits: owed (who owes how much), repaid (paid back, by person or over time), owed_vs_repaid, days_to_pay (how fast each person pays back), days_waiting (how long unpaid shares have waited). A request covering several things ("who owes, when they paid and how long they took") = several show_chart calls in one go, plus show_table report splits for the dates.
-- If no show_chart metric fits, get the numbers with other tools first (get_report, get_overview, spending_over_time, top_payees…), then call draw_chart with exactly those numbers.
-- The app draws charts, so never describe a chart in text, draw ASCII art or paste the data as text. After charts, add one or two lines on what stands out.
-- To show data as a table (lists, reports, "show me all…", "details"), call show_table; it has CSV, Excel, PDF and Word buttons.
-- For export/download/Excel/CSV/PDF/Word/doc/sheet requests, call export_file with the report, filters and format (default xlsx; Word/doc/docx = docx). Entries = transactions, splits = each share with paid dates, people = per friend summary, plus accounts, budget, categories, monthly.
+  what = what.trim();
+  if (NOT_QUICK.test(what)) return null;
+  const amount = Number(`${whole.replace(/,/g, '')}.${paise || 0}`);
+  if (!(amount > 0 && amount <= 1e7)) return null;
+  const type = ['got', 'received', 'earned'].includes(verb) || INCOME_WORDS.test(what) ? 'credit' : 'debit';
+  return { type, amount, description: what[0].toUpperCase() + what.slice(1), date };
+}
 
-Style:
-- Keep replies short, warm and practical, like a smart friend. Write amounts like ₹1,25,000 (Indian grouping). Use short bullet lists for breakdowns and **bold** for the key figure.
-- After an action, confirm in one line what happened (e.g. "Added **₹500** Petrol for today."). The app shows a card with Undo, so don't repeat every field.
-- Lines in [square brackets] at the end of your earlier replies are notes from the app about what was done, with entry ids. Use them, but never write such notes yourself or show ids to the user.
-- Reply in the language the user writes in.`;
+/** Commands simple enough to run without the AI: app controls and a single plain entry. */
+function parseQuickCommand(text = '') {
+  const command = normalizeCommand(text);
+  for (const [rx, args] of APP_COMMANDS) if (rx.test(command)) return { tool: 'app_control', args };
+  const page = command.match(PAGE_COMMAND);
+  if (page) return { tool: 'app_control', args: { command: 'open_page', page: page[1] } };
+  const entry = parseQuickAdd(command);
+  if (entry) return { tool: 'add_entries', args: { entries: [entry] } };
+  return null;
+}
+
+const MAX_CONTEXT_MESSAGES = 6;
+const FOLLOW_UP = /\b(it|that|those|these|them|same|again|also|instead|too|above|previous|last one|what about|how about)\b|^(and|yes|no|yeah|yep|nope|sure|ok|okay|do it|go ahead|both|all|only)\b/i;
+
+/** Earlier turns are only sent for follow-ups ("change it to 300", answers to the assistant's question). */
+function needsContext(history) {
+  if (history.length < 2) return false;
+  const last = history.at(-1).content.trim();
+  const prev = history.at(-2);
+  const askedSomething = prev.role === 'assistant' && /\?\s*(\[[^\]]*\]\s*)*$/.test(prev.content);
+  return askedSomething || FOLLOW_UP.test(last) || last.split(/\s+/).length <= 3;
+}
+
+/** The last few turns, without repeated questions, starting with a user turn. */
+function recentTurns(history) {
+  const deduped = history.filter((m, i) => !(i > 0 && m.role === 'user' && history[i - 1].role === 'user' && history[i - 1].content === m.content));
+  const recent = deduped.slice(-MAX_CONTEXT_MESSAGES);
+  while (recent.length > 1 && recent[0].role !== 'user') recent.shift();
+  return recent;
+}
+
+const noAiUsage = (mode) => ({ mode, calls: 0, promptTokens: 0, completionTokens: 0, reasoningTokens: 0, cachedTokens: 0, totalTokens: 0 });
+
+function addUsage(total, { usage, limits }) {
+  total.calls += 1;
+  for (const key of ['promptTokens', 'completionTokens', 'reasoningTokens', 'cachedTokens', 'totalTokens']) total[key] += usage[key];
+  if (limits) total.limits = limits;
+}
+
+function logUsage(u) {
+  const l = u.limits ?? {};
+  console.log(
+    `AI usage: ${u.calls} call(s), ${u.totalTokens} tokens (${u.promptTokens} in, ${u.completionTokens} out, ${u.reasoningTokens} reasoning), ` +
+      `${u.toolsSent} tools [${u.groups.join(', ')}], ${u.messagesSent} message(s) sent; ` +
+      `left: ${l.tokensLeftThisMinute ?? '?'}/${l.tokensPerMinute ?? '?'} tokens this minute, ${l.requestsLeftToday ?? '?'}/${l.requestsPerDay ?? '?'} requests today`,
+  );
 }
 
 /**
  * Answers a question or carries out a request. `history` is the chat so far (user/assistant turns).
- * Returns `{ reply, toolsUsed, actions, memo }`: actions are cards the app renders (charts, added entries…),
- * memo is a short note of what was done that the app sends back with this turn next time.
+ * Returns `{ reply, toolsUsed, actions, memo, usage }`: actions are cards the app renders (charts, added entries…),
+ * memo is a short note of what was done that the app sends back with this turn next time, and usage is the
+ * token count of this turn plus the Groq rate limits left.
  */
 export async function askAssistant(history) {
   const { name = 'you' } = await getSettings();
-  const messages = [{ role: 'system', content: await systemPrompt(name) }, ...history];
+  const text = history.at(-1)?.content ?? '';
+  const small = smallTalkReply(text, name);
+  if (small) return { reply: small, toolsUsed: [], actions: [], memo: '', usage: noAiUsage('canned reply') };
+
   const toolsUsed = new Set();
   const ctx = { actions: [], memo: [], said: [] };
-  const done = (reply) => ({ reply, toolsUsed: [...toolsUsed], actions: ctx.actions, memo: ctx.memo.join('\n') });
+  const done = (reply, usage) => ({ reply, toolsUsed: [...toolsUsed], actions: ctx.actions, memo: ctx.memo.join('\n'), usage });
+
+  const quick = parseQuickCommand(text);
+  if (quick) {
+    const result = await runTool(quick.tool, quick.args, ctx);
+    if (!result?.error) {
+      toolsUsed.add(quick.tool);
+      return done(ctx.said.join('\n\n'), noAiUsage('quick command'));
+    }
+  }
+
+  const turns = needsContext(history) ? recentTurns(history) : [history.at(-1)];
+  const userText = turns
+    .filter((m) => m.role === 'user')
+    .slice(-2)
+    .map((m) => m.content)
+    .join('\n');
+  const groups = pickGroups(userText);
+  const tools = toolsFor(groups);
+  const messages = [{ role: 'system', content: await systemPrompt(name, groups, userText) }, ...turns];
+  const usage = { ...noAiUsage('ai'), toolsSent: tools.length, groups, messagesSent: turns.length, limits: null };
+  const finish = (reply) => {
+    logUsage(usage);
+    return done(reply, usage);
+  };
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    const message = await chatCompletion({ messages, tools: TOOLS, temperature: 0.2 });
-    const calls = message.tool_calls ?? [];
+    const lastRound = step === MAX_STEPS - 1;
+    const result = await chatCompletion({ messages, tools, toolChoice: lastRound ? 'none' : 'auto', temperature: 0.2 });
+    addUsage(usage, result);
+    const { message } = result;
+    const calls = lastRound ? [] : (message.tool_calls ?? []);
     if (!calls.length) {
       const reply = (message.content ?? '').replace(/(\n\s*\[[^\]\n]*\]\s*)+$/, '').trim();
-      if (reply) return done(reply);
-      return done(ctx.actions.length ? 'Done.' : "I couldn't find an answer to that. Try asking it another way.");
+      if (reply) return finish(reply);
+      return finish(ctx.actions.length ? 'Done.' : "I couldn't find an answer to that. Try asking it another way.");
     }
-    // Sent back whole: Gemini rejects the next turn unless its thought signatures come back untouched.
     messages.push({ ...message, role: 'assistant', content: message.content ?? '', tool_calls: calls });
     let allSaid = true;
     for (const call of calls) {
@@ -1445,7 +1628,7 @@ export async function askAssistant(history) {
       messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result).slice(0, MAX_TOOL_RESULT_CHARS) });
     }
     // Plain actions confirm themselves; skipping the follow-up AI call halves usage of small free quotas.
-    if (allSaid) return done(ctx.said.join('\n\n'));
+    if (allSaid) return finish(ctx.said.join('\n\n'));
   }
-  return done(ctx.actions.length ? 'Done. See below.' : 'That needed more digging than I can do in one go. Try a narrower question.');
+  return finish(ctx.actions.length ? 'Done. See below.' : 'That needed more digging than I can do in one go. Try a narrower question.');
 }
