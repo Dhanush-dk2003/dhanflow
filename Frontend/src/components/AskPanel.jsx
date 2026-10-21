@@ -118,16 +118,15 @@ function SetupHelp() {
       <ol className="list-decimal space-y-1.5 pl-5 text-xs">
         <li>
           Get a free key at{' '}
-          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-aqua underline">
-            aistudio.google.com/apikey
+          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-aqua underline">
+            console.groq.com/keys
           </a>
         </li>
         <li>
-          Add it to <span className="kbd">Backend/.env</span>: <span className="kbd">AI_API_KEY=your-key</span>
+          Add it to <span className="kbd">Backend/.env</span>: <span className="kbd">GROQ_API_KEY=your-key</span>
         </li>
-        <li>Restart the backend (on Render: Environment → add AI_API_KEY)</li>
+        <li>Restart the backend (on Render: Environment → add GROQ_API_KEY)</li>
       </ol>
-      <p className="text-xs text-white/40">Groq or a local Ollama work too. See the README.</p>
     </div>
   );
 }
@@ -543,8 +542,7 @@ export default function AskPanel({ open, onClose }) {
                         <p className="pl-1 text-[10px] text-white/30">
                           Looked at: {m.toolsUsed.filter((t) => TOOL_LABELS[t]).map((t) => TOOL_LABELS[t]).join(', ')}
                         </p>
-                      )}
-                    </div>
+                      )}                    </div>
                   ),
                 )
               )}
